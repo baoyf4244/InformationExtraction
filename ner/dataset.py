@@ -1,27 +1,33 @@
+import os
 import json
 import torch
-from torch.utils.data import Dataset
-from transformers import BertTokenizer
+from typing import Optional
 from collections import defaultdict
+
+from pytorch_lightning.utilities.types import TRAIN_DATALOADERS, EVAL_DATALOADERS
+from transformers import BertTokenizer
+from pytorch_lightning import LightningDataModule
+from torch.utils.data import Dataset, DataLoader, random_split
 
 
 class MRCNERDataset(Dataset):
     """
     MRC NER Dataset
     Args:
-        filename: path to mrc-ner style json
+        data_file: path to mrc-ner style json
         tokenizer: BertTokenizer
     """
-    def __init__(self, filename, tag2query_file, tokenizer: BertTokenizer, max_len=512):
-        self.filename = filename
-        self.tag2query_file = tag2query_file
+    def __init__(self, data_file, tag_file, tokenizer: BertTokenizer, max_len=200, predict=False):
+        self.data_file = data_file
+        self.tag_file = tag_file
         self.tokenizer = tokenizer
         self.max_len = max_len
+        self.predict = predict
         self.tag2query = self.get_tag2query()
         self.dataset = self.make_dataset()
 
     def get_tag2query(self):
-        with open(self.tag2query_file, encoding='utf-8') as f:
+        with open(self.tag_file, encoding='utf-8') as f:
             tags = json.load(f)
 
         tag2query = {}
@@ -33,7 +39,7 @@ class MRCNERDataset(Dataset):
 
     def make_dataset(self):
         dataset = []
-        with open(self.filename, encoding='utf-8') as f:
+        with open(self.data_file, encoding='utf-8') as f:
             for i, line in enumerate(f):
                 segments = line.strip().split()
                 context_tokens = []
@@ -41,7 +47,11 @@ class MRCNERDataset(Dataset):
                 start_tags = []
                 end_tags = []
                 for segment in segments:
-                    word, tag = segment.split('/')
+                    if self.predict:
+                        word = segment
+                        tag = 'o'
+                    else:
+                        word, tag = segment.split('/')
                     sub_tokens = self.tokenizer.tokenize(word)
                     context_tokens.extend(sub_tokens)
                     if tag in self.tag2query:
@@ -133,6 +143,68 @@ class MRCNERDataset(Dataset):
 
         return torch.LongTensor(input_ids), torch.LongTensor(attention_mask), torch.LongTensor(token_type_ids), \
                torch.LongTensor(start_labels), torch.LongTensor(end_labels), span_labels
+
+
+class MRCDataModule(LightningDataModule):
+    def __init__(self,
+                 data_dir: str = 'data',
+                 max_len: int = 200,
+                 batch_size: int = 16,
+                 bert_model_name: str = 'bert-base-chinese'):
+        """
+
+        :param data_dir: 数据存放目录
+        :param max_len: 数据保留的最大长度
+        :param batch_size:
+        :param bert_model_name:
+        """
+        super(MRCDataModule, self).__init__()
+        self.data_dir = data_dir
+        self.max_len = max_len
+        self.batch_size = batch_size
+        self.tokenizer = BertTokenizer.from_pretrained(bert_model_name)
+        self.train_dataset = None
+        self.val_dataset = None
+        self.test_dataset = None
+        self.predict_dataset = None
+
+        self.save_hyperparameters()
+
+    def setup(self, stage: Optional[str] = None) -> None:
+        train_file = os.path.join(self.data_dir, 'train.txt')
+        val_file = os.path.join(self.data_dir, 'dev.txt')
+        test_file = os.path.join(self.data_dir, 'test.txt')
+        predict_file = os.path.join(self.data_dir, 'predict_file')
+        tag_file = os.path.join(self.data_dir, 'questions.json')
+
+        if stage == 'fit' or stage is None:
+            self.train_dataset = MRCNERDataset(train_file, tag_file, self.tokenizer)
+            if os.path.isfile(val_file):
+                self.val_dataset = MRCNERDataset(val_file, tag_file, self.tokenizer)
+            else:
+                data_size = len(self.train_dataset)
+                train_size = int(data_size * 0.8)
+                val_size = data_size - train_size
+                self.train_dataset, self.val_dataset = random_split(self.train_dataset, [train_size, val_size])
+
+        if stage == 'test' or stage is None:
+            if os.path.isfile(test_file):
+                self.test_dataset = MRCNERDataset(test_file, tag_file, self.tokenizer)
+
+        if stage == 'predict' or stage is None:
+            self.predict_dataset = MRCNERDataset(predict_file, tag_file, self.tokenizer, True)
+
+    def train_dataloader(self) -> TRAIN_DATALOADERS:
+        return DataLoader(self.train_dataset, self.batch_size)
+
+    def val_dataloader(self) -> EVAL_DATALOADERS:
+        return DataLoader(self.val_dataset, self.batch_size * 2)
+
+    def test_dataloader(self) -> EVAL_DATALOADERS:
+        return DataLoader(self.test_dataset, self.batch_size * 2)
+
+    def predict_dataloader(self) -> EVAL_DATALOADERS:
+        return DataLoader(self.predict_dataset, self.batch_size * 2)
 
 
 if __name__ == '__main__':
