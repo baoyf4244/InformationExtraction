@@ -8,18 +8,61 @@ import pytorch_lightning as pl
 from layers import MultiNonLinearLayer
 from transformers import AutoModel, AutoConfig
 
-pl.seed_everything(124)
+
+optimizer_params = {
+    'adamw': {
+        '--beta1': 0.9,
+        '--beta2': 0.98,
+        '--eps': 1e-8,
+        '--weight_decay': 0.01
+    }
+}
 
 
-class MRCNERModule(pl.LightningModule):
+class BertBasedModule(pl.LightningModule):
     def __init__(self,
-                 pretrained_model_name: str = 'bert-base-chinese'):
-        super(MRCNERModule, self).__init__()
+                 pretrained_model_name: str = 'bert-base-chinese',
+                 warmup_steps: int = 1000,
+                 num_total_steps: int = 270000,
+                 *args, **kwargs
+                 ):
+        super(BertBasedModule, self).__init__(*args, **kwargs)
+        self.warmup_steps = warmup_steps
+        self.num_total_steps = num_total_steps
         self.bert = AutoModel.from_pretrained(pretrained_model_name)
-        self.config = AutoConfig.from_pretrained(pretrained_model_name)
-        self.start = nn.Linear(self.config.hidden_size, 1)
-        self.end = nn.Linear(self.config.hidden_size, 1)
-        self.cls = MultiNonLinearLayer(self.config.hidden_size * 2, self.config.intermediate_size, 1, 2)
+        self.bert_config = AutoConfig.from_pretrained(pretrained_model_name)
+
+    def configure_optimizers(self):
+        no_decay = ["bias", "LayerNorm.weight"]
+        optimizer_grouped_parameters = [
+            {
+                "params": [p for n, p in self.named_parameters() if not any(nd in n for nd in no_decay)],
+                "weight_decay": 0.01,
+            },
+            {
+                "params": [p for n, p in self.named_parameters() if any(nd in n for nd in no_decay)],
+                "weight_decay": 0.0,
+            },
+        ]
+
+        optim = torch.optim.AdamW(optimizer_grouped_parameters,
+                                  2e-5,
+                                  (0.9, 0.98),
+                                  1e-8,
+                                  0.01)
+
+        lr = transformers.get_polynomial_decay_schedule_with_warmup(optim, self.warmup_steps,
+                                                                    self.num_total_steps, lr_end=2e-5 / 5)
+        return [optim], [lr]
+
+
+class MRCNERModule(BertBasedModule):
+    def __init__(self, *args, **kwargs):
+        super(MRCNERModule, self).__init__(*args, **kwargs)
+        self.start = nn.Linear(self.bert_config.hidden_size, 1)
+        self.end = nn.Linear(self.bert_config.hidden_size, 1)
+        self.cls = MultiNonLinearLayer(self.bert_config.hidden_size * 2, self.bert_config.intermediate_size, 1, 2)
+        self.save_hyperparameters()
 
     def forward(self, input_ids, attention_mask, token_type_ids):
         bert_outputs, _ = self.bert(input_ids, attention_mask, token_type_ids, return_dict=False)
@@ -67,9 +110,7 @@ class MRCNERModule(pl.LightningModule):
         tf_board_logs['val_loss' if val else 'train_loss'] = loss
 
         tp, fp, fn = metrics.mrc_span_f1(start_logits, end_logits, span_logits, masks, masks, span_labels)
-        recall = tp / (tp + fn + 1e-10)
-        precision = tp / (tp + fp + 1e-10)
-        f1 = 2 * recall * precision / (recall + precision + 1e-10)
+        recall, precision, f1 = metrics.get_f1_score(tp, fp, fn)
 
         tf_board_logs['tp'] = tp
         tf_board_logs['fp'] = fp
@@ -99,9 +140,7 @@ class MRCNERModule(pl.LightningModule):
         tps = torch.stack([output['tp'] for output in outputs]).sum()
         fps = torch.stack([output['fp'] for output in outputs]).sum()
         fns = torch.stack([output['fn'] for output in outputs]).sum()
-        recall = tps / (tps + fns + 1e-6)
-        precision = tps / (tps + fps + 1e-6)
-        f1 = 2 * precision * recall / (precision + recall + 1e-6)
+        recall, precision, f1 = metrics.get_f1_score(tps, fps, fns)
         val_loss = torch.stack([output['val_loss'] for output in outputs]).mean()
         tf_board_logs = {
             'val_loss': val_loss,
@@ -112,21 +151,4 @@ class MRCNERModule(pl.LightningModule):
         self.log_dict(tf_board_logs, prog_bar=True)
         return tf_board_logs
 
-    def configure_optimizers(self):
-        no_decay = ["bias", "LayerNorm.weight"]
-        optimizer_grouped_parameters = [
-            {
-                "params": [p for n, p in self.named_parameters() if not any(nd in n for nd in no_decay)],
-                "weight_decay": 0.01,
-            },
-            {
-                "params": [p for n, p in self.named_parameters() if any(nd in n for nd in no_decay)],
-                "weight_decay": 0.0,
-            },
-        ]
 
-        optim = torch.optim.AdamW(optimizer_grouped_parameters, 2e-5, (0.9, 0.98), 1e-8, 0.01)
-
-        num_steps = len(self.train_dataloader()) // self.train_dataloader().batch_size * self.trainer.max_epochs
-        lr = transformers.get_polynomial_decay_schedule_with_warmup(optim, 1000, 100000, lr_end=2e-5 / 5)
-        return [optim], [lr]

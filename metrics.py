@@ -40,3 +40,10 @@ def mrc_span_f1(start_logits, end_logits, span_logits, start_masks, end_masks, s
     fp = (~span_labels & span_preds).long().sum()
     fn = (span_labels & ~span_preds).long().sum()
     return tp, fp, fn
+
+
+def get_f1_score(tp, fp, fn):
+    recall = tp / (tp + fn + 1e-10)
+    precision = tp / (tp + fp + 1e-10)
+    f1 = 2 * recall * precision / (recall + precision + 1e-10)
+    return recall, precision, f1

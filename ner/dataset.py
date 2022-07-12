@@ -150,19 +150,19 @@ class MRCDataModule(LightningDataModule):
                  data_dir: str = 'data',
                  max_len: int = 200,
                  batch_size: int = 16,
-                 bert_model_name: str = 'bert-base-chinese'):
+                 pretrained_model_name: str = 'bert-base-chinese'):
         """
 
         :param data_dir: 数据存放目录
         :param max_len: 数据保留的最大长度
         :param batch_size:
-        :param bert_model_name:
+        :param pretrained_model_name:
         """
         super(MRCDataModule, self).__init__()
         self.data_dir = data_dir
         self.max_len = max_len
         self.batch_size = batch_size
-        self.tokenizer = BertTokenizer.from_pretrained(bert_model_name)
+        self.tokenizer = BertTokenizer.from_pretrained(pretrained_model_name)
         self.train_dataset = None
         self.val_dataset = None
         self.test_dataset = None
@@ -195,16 +195,16 @@ class MRCDataModule(LightningDataModule):
             self.predict_dataset = MRCNERDataset(predict_file, tag_file, self.tokenizer, True)
 
     def train_dataloader(self) -> TRAIN_DATALOADERS:
-        return DataLoader(self.train_dataset, self.batch_size)
+        return DataLoader(self.train_dataset, self.batch_size, collate_fn=MRCNERDataset.collocate_fn)
 
     def val_dataloader(self) -> EVAL_DATALOADERS:
-        return DataLoader(self.val_dataset, self.batch_size * 2)
+        return DataLoader(self.val_dataset, self.batch_size, collate_fn=MRCNERDataset.collocate_fn)
 
     def test_dataloader(self) -> EVAL_DATALOADERS:
-        return DataLoader(self.test_dataset, self.batch_size * 2)
+        return DataLoader(self.test_dataset, self.batch_size, collate_fn=MRCNERDataset.collocate_fn)
 
     def predict_dataloader(self) -> EVAL_DATALOADERS:
-        return DataLoader(self.predict_dataset, self.batch_size * 2)
+        return DataLoader(self.predict_dataset, self.batch_size, collate_fn=MRCNERDataset.collocate_fn)
 
 
 if __name__ == '__main__':
