@@ -1,5 +1,8 @@
-class Tokenizer:
-    def __int__(self, vocab_file):
+import os
+
+
+class CharTokenizer:
+    def __int__(self, vocab_file, max_freq=None, min_freq=10):
         self.vocab_file = vocab_file
 
     def load_vocab(self):
