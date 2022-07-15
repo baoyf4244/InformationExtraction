@@ -58,7 +58,7 @@ def get_ner_labels(tag_ids, masks, idx2tag):
     :return: dict，标签名称及相应的索引列表，索引列表为二元组，元组第一个元素为实体起始位置，第二个索引为实体结束位置+1（方便取值）
     """
     if isinstance(tag_ids, torch.Tensor):
-        tag_ids = tag_ids.numpy().tolist()
+        tag_ids = tag_ids.cpu().numpy().tolist()
 
     if isinstance(masks, torch.Tensor):
         seq_len = masks.sum()

@@ -211,6 +211,7 @@ class NERDataModule(LightningDataModule):
                  max_len: int = 200,
                  batch_size: int = 16,
                  model_name: str = 'BiLSTM-LAN',
+                 taf_file: str = 'data/idx2tag_question.json',
                  pretrained_model_name: str = 'bert-base-chinese'):
         """
 
@@ -224,6 +225,7 @@ class NERDataModule(LightningDataModule):
         self.max_len = max_len
         self.batch_size = batch_size
         self.dataset_class = factory.get_dataset(model_name)
+        self.tag_file = taf_file
         self.tokenizer = BertTokenizer.from_pretrained(pretrained_model_name)
         self.train_dataset = None
         self.val_dataset = None
@@ -237,7 +239,7 @@ class NERDataModule(LightningDataModule):
         val_file = os.path.join(self.data_dir, 'dev.txt')
         test_file = os.path.join(self.data_dir, 'test.txt')
         predict_file = os.path.join(self.data_dir, 'predict.txt')
-        tag_file = os.path.join(self.data_dir, 'idx2tag.json')
+        tag_file = os.path.join(self.data_dir, self.tag_file)
 
         if stage == 'fit' or stage is None:
             self.train_dataset = self.dataset_class(train_file, tag_file, self.tokenizer)

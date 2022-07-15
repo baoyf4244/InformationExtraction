@@ -91,7 +91,7 @@ class MRCNERModule(BertBasedModule):
         loss = (loss * masks).sum() / masks.sum()
         return loss
 
-    def compute_total_loss(self, batch, tf_board_logs, val=False):
+    def compute_step_states(self, batch, validation=True):
         input_ids, attention_mask, token_type_ids, start_labels, end_labels, span_labels = batch
         start_logits, end_logits, span_logits = self(input_ids, attention_mask, token_type_ids)
 
@@ -109,52 +109,69 @@ class MRCNERModule(BertBasedModule):
         span_loss = self.compute_loss(span_logits, span_labels, span_masks)
 
         loss = start_loss + end_loss + span_loss
-        tf_board_logs['start_loss'] = start_loss
-        tf_board_logs['end_loss'] = end_loss
-        tf_board_logs['span_loss'] = span_loss
-        tf_board_logs['val_loss' if val else 'train_loss'] = loss
 
         tp, fp, fn = metrics.mrc_span_f1(start_logits, end_logits, span_logits, masks, masks, span_labels)
         recall, precision, f1 = metrics.get_f1_score(tp, fp, fn)
 
-        tf_board_logs['tp'] = tp
-        tf_board_logs['fp'] = fp
-        tf_board_logs['fn'] = fn
-        tf_board_logs['recall'] = recall
-        tf_board_logs['precision'] = precision
-        tf_board_logs['f1'] = f1
-
-        return tf_board_logs
-
-    def training_step(self, batch, batch_idx):
-        tf_board_logs = {
-            'lr': self.trainer.optimizers[0].param_groups[0]['lr']
-        }
-
-        self.compute_total_loss(batch, tf_board_logs)
-        self.log_dict(tf_board_logs, prog_bar=True)
-        return tf_board_logs['train_loss']
-
-    def validation_step(self, batch, batch_idx):
-        tf_board_logs = {}
-        self.compute_total_loss(batch, tf_board_logs, val=True)
-        self.log_dict(tf_board_logs)
-        return tf_board_logs
-
-    def validation_epoch_end(self, outputs):
-        tps = torch.stack([output['tp'] for output in outputs]).sum()
-        fps = torch.stack([output['fp'] for output in outputs]).sum()
-        fns = torch.stack([output['fn'] for output in outputs]).sum()
-        recall, precision, f1 = metrics.get_f1_score(tps, fps, fns)
-        val_loss = torch.stack([output['val_loss'] for output in outputs]).mean()
-        tf_board_logs = {
-            'val_loss': val_loss,
+        logs = {
+            'tp': tp,
+            'fp': fp,
+            'fn': fn,
+            'f1_score': f1,
             'recall': recall,
             'precision': precision,
-            'f1': f1
+            'loss': loss,
+            'start_loss': start_loss,
+            'end_loss': end_loss
         }
-        self.log_dict(tf_board_logs, prog_bar=True)
-        return tf_board_logs
+        if validation:
+            logs = {'val_' + key: value for key, value in logs.items()}
+
+        return logs
+
+    def compute_epoch_states(self, outputs, validation=True):
+        if validation:
+            tps = torch.Tensor([output['val_tp'] for output in outputs]).sum()
+            fps = torch.Tensor([output['val_fp'] for output in outputs]).sum()
+            fns = torch.Tensor([output['val_fn'] for output in outputs]).sum()
+            loss = torch.stack([output['val_loss'] for output in outputs]).mean()
+        else:
+            tps = torch.Tensor([output['tp'] for output in outputs]).sum()
+            fps = torch.Tensor([output['fp'] for output in outputs]).sum()
+            fns = torch.Tensor([output['fn'] for output in outputs]).sum()
+            loss = torch.stack([output['loss'] for output in outputs]).mean()
+        recall, precision, f1 = metrics.get_f1_score(tps, fps, fns)
+
+        logs = {
+            'tp': tps,
+            'fp': fps,
+            'fn': fns,
+            'loss': loss,
+            'f1_score': f1,
+            'recall': recall,
+            'precision': precision
+        }
+        if validation:
+            logs = {'val_' + key: value for key, value in logs.items()}
+
+        self.log_dict(logs)
+
+    def training_step(self, batch, batch_idx):
+        logs = self.compute_step_states(batch, validation=False)
+        logs['lr'] = self.trainer.optimizers[0].param_groups[0]['lr']
+        self.log_dict(logs, prog_bar=True, on_epoch=True)
+        return logs
+
+    def training_epoch_end(self, outputs):
+        self.compute_epoch_states(outputs, False)
+
+    def validation_step(self, batch, batch_idx):
+        logs = self.compute_step_states(batch)
+        self.log_dict(logs, prog_bar=True)
+        return logs
+
+    def validation_epoch_end(self, outputs):
+        self.compute_epoch_states(outputs)
 
 
 class BiLSTMLanNERModule(pl.LightningModule):
@@ -172,8 +189,13 @@ class BiLSTMLanNERModule(pl.LightningModule):
             self.idx2tag = {int(key): value for key, value in self.idx2tag.items()}
         self.num_labels = len(self.idx2tag)
         self.embeddings = nn.Embedding(vocab_size, embedding_size)
-        self.label_embeddings = torch.FloatTensor(self.num_labels, hidden_size)
-        init.xavier_normal_(self.label_embeddings)
+        self.label_embeddings = nn.Embedding(len(self.idx2tag), hidden_size)
+        label_ids = torch.arange(0, len(self.idx2tag), dtype=torch.int64).unsqueeze(0)
+        self.register_buffer('label_ids', label_ids)
+        # label_embeddings = torch.FloatTensor(self.num_labels, hidden_size)
+        # init.xavier_normal_(label_embeddings)
+        # self.register_buffer('label_embeddings', nn.Parameter(label_embeddings))
+
         self.models = nn.ModuleList([layers.BiLSTMLan(embedding_size, hidden_size, num_heads)])
         for i in range(0, num_layers - 2):
             self.models.append(layers.BiLSTMLan(hidden_size * 2, hidden_size, num_heads))
@@ -182,11 +204,14 @@ class BiLSTMLanNERModule(pl.LightningModule):
 
     def forward(self, input_ids, masks=None):
         inputs = self.embeddings(input_ids)
+        label_ids = self.label_ids.expand(input_ids.size(0), -1)
         for layer in self.models[: -1]:
-            label_embeddings = torch.unsqueeze(self.label_embeddings, 0).expand([inputs.size(0), -1, -1])
+            label_embeddings = self.label_embeddings(label_ids)
+            # label_embeddings = torch.unsqueeze(self.label_embeddings, 0).expand([inputs.size(0), -1, -1])
             inputs = layer(inputs, label_embeddings, masks)
 
-        label_embeddings = torch.unsqueeze(self.label_embeddings, 0).expand([inputs.size(0), -1, -1])
+        # label_embeddings = torch.unsqueeze(self.label_embeddings, 0).expand([inputs.size(0), -1, -1])
+        label_embeddings = self.label_embeddings(label_ids)
         outputs = self.models[-1](inputs, label_embeddings, masks, True)
         return outputs
 
