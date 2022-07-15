@@ -7,11 +7,10 @@ import layers
 import metrics
 import torch.nn as nn
 import torch.nn.functional as F
-import torch.nn.init as init
 import pytorch_lightning as pl
-from torchmetrics import F1Score, Precision, Recall
 from layers import MultiNonLinearLayer
 from transformers import AutoModel, AutoConfig
+from crf import CRF
 
 
 optimizer_params = {
@@ -222,6 +221,103 @@ class BiLSTMLanNERModule(pl.LightningModule):
         loss = loss.sum() / masks.sum()
 
         preds = outputs.argmax(-1)
+        tp, fp, fn = metrics.flat_ner_stats(preds, targets, masks, self.idx2tag)
+        precision, recall, f1 = metrics.get_f1_score(tp, fp, fn)
+
+        logs = {
+            'tp': tp,
+            'fp': fp,
+            'fn': fn,
+            'loss': loss,
+            'f1_score': f1,
+            'recall': recall,
+            'precision': precision
+        }
+        if validation:
+            logs = {'val_' + key: value for key, value in logs.items()}
+
+        return logs
+
+    def compute_epoch_states(self, outputs, validation=True):
+        if validation:
+            tps = torch.Tensor([output['val_tp'] for output in outputs]).sum()
+            fps = torch.Tensor([output['val_fp'] for output in outputs]).sum()
+            fns = torch.Tensor([output['val_fn'] for output in outputs]).sum()
+            loss = torch.stack([output['val_loss'] for output in outputs]).mean()
+        else:
+            tps = torch.Tensor([output['tp'] for output in outputs]).sum()
+            fps = torch.Tensor([output['fp'] for output in outputs]).sum()
+            fns = torch.Tensor([output['fn'] for output in outputs]).sum()
+            loss = torch.stack([output['loss'] for output in outputs]).mean()
+        recall, precision, f1 = metrics.get_f1_score(tps, fps, fns)
+
+        logs = {
+            'tp': tps,
+            'fp': fps,
+            'fn': fns,
+            'loss': loss,
+            'f1_score': f1,
+            'recall': recall,
+            'precision': precision
+        }
+        if validation:
+            logs = {'val_' + key: value for key, value in logs.items()}
+
+        self.log_dict(logs)
+
+    def training_step(self, batch, batch_idx):
+        logs = self.compute_step_states(batch, validation=False)
+        logs['lr'] = self.trainer.optimizers[0].param_groups[0]['lr']
+        self.log_dict(logs, on_epoch=True, prog_bar=True)
+        return logs
+
+    def training_epoch_end(self, outputs):
+        self.compute_epoch_states(outputs, validation=False)
+
+    def validation_step(self, batch, batch_idx):
+        logs = self.compute_step_states(batch)
+        self.log_dict(logs, prog_bar=True)
+        return logs
+
+    def validation_epoch_end(self, outputs):
+        self.compute_epoch_states(outputs)
+
+
+class BiLSTMCrfNERModule(pl.LightningModule):
+    def __init__(self,
+                 embedding_size: int = 128,
+                 hidden_size: int = 128,
+                 vocab_size: int = 21128,
+                 num_layers: int = 2,
+                 tag_file: str = 'data/tags.json'
+                 ):
+        super(BiLSTMCrfNERModule, self).__init__()
+        with open(tag_file, encoding='utf-8') as f:
+            self.idx2tag = json.load(f)
+            self.idx2tag = {int(key): value for key, value in self.idx2tag.items()}
+        self.num_labels = len(self.idx2tag)
+        self.embeddings = nn.Embedding(vocab_size, embedding_size)
+        self.lstm = nn.LSTM(embedding_size, hidden_size, bidirectional=True, num_layers=num_layers, batch_first=True)
+        self.linear = nn.Linear(hidden_size * 2, len(self.idx2tag))
+        self.crf = CRF(len(self.idx2tag))
+        self.save_hyperparameters()
+
+    def forward(self, input_ids, tag_ids=None, masks=None):
+        inputs = self.embeddings(input_ids)
+        lstm_outputs = self.lstm(inputs)
+        linear_outputs = self.linear(lstm_outputs)
+        if tag_ids is None:
+            return self.crf.decode(linear_outputs, masks)
+        loss = self.crf(linear_outputs, tag_ids, masks)
+        return loss
+
+    def compute_step_states(self, batch, validation=True):
+        input_ids, targets, masks = batch
+        outputs = self(input_ids, targets, masks)
+        loss = F.cross_entropy(outputs.view(-1, self.num_labels), targets.view(-1), reduction='none', ignore_index=0) * masks.view(-1)
+        loss = loss.sum() / masks.sum()
+
+        preds = self(input_ids, masks=None)
         tp, fp, fn = metrics.flat_ner_stats(preds, targets, masks, self.idx2tag)
         precision, recall, f1 = metrics.get_f1_score(tp, fp, fn)
 

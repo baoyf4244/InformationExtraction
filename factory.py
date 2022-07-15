@@ -1,6 +1,6 @@
 import torch.nn.functional as F
 from ner.dataset import MRCNERDataset, FlatNERDataSet
-from ner.models import MRCNERModule, BiLSTMLanNERModule
+from ner.models import MRCNERModule, BiLSTMLanNERModule, BiLSTMCrfNERModule
 
 
 def act_func_factory(name):
@@ -21,7 +21,8 @@ def act_func_factory(name):
 def get_dataset(model_name):
     dataset = {
         'MRC': MRCNERDataset,
-        'BILSTM-LAN': FlatNERDataSet
+        'BILSTM-LAN': FlatNERDataSet,
+        'BILSTM-CRF': FlatNERDataSet
     }
     model_name = model_name.upper()
     if model_name in dataset:
@@ -33,7 +34,8 @@ def get_dataset(model_name):
 def get_model(model_name):
     models = {
         'MRC': MRCNERModule,
-        'BILSTM-LAN': BiLSTMLanNERModule
+        'BILSTM-LAN': BiLSTMLanNERModule,
+        'BILSTM-CRF': BiLSTMCrfNERModule
     }
 
     model_name = model_name.upper()
