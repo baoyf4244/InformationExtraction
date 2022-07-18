@@ -10,7 +10,7 @@ import torch.nn.functional as F
 import pytorch_lightning as pl
 from layers import MultiNonLinearLayer
 from transformers import AutoModel, AutoConfig
-from crf import CRF
+from torchcrf import CRF
 
 
 optimizer_params = {
@@ -304,20 +304,23 @@ class BiLSTMCrfNERModule(pl.LightningModule):
 
     def forward(self, input_ids, tag_ids=None, masks=None):
         inputs = self.embeddings(input_ids)
-        lstm_outputs = self.lstm(inputs)
-        linear_outputs = self.linear(lstm_outputs)
+        lstm_outputs, _ = self.lstm(inputs)
+        linear_outputs = torch.transpose(self.linear(lstm_outputs), 1, 0)
+        linear_outputs = F.softmax(linear_outputs, -1)
+        if masks is not None:
+            masks = torch.transpose(masks, 1, 0).bool()
         if tag_ids is None:
             return self.crf.decode(linear_outputs, masks)
+        tag_ids = torch.transpose(tag_ids, 1, 0)
         loss = self.crf(linear_outputs, tag_ids, masks)
-        return loss
+        return -loss
 
     def compute_step_states(self, batch, validation=True):
         input_ids, targets, masks = batch
-        outputs = self(input_ids, targets, masks)
-        loss = F.cross_entropy(outputs.view(-1, self.num_labels), targets.view(-1), reduction='none', ignore_index=0) * masks.view(-1)
-        loss = loss.sum() / masks.sum()
+        loss = self(input_ids, targets, masks)
+        loss = loss
 
-        preds = self(input_ids, masks=None)
+        preds = self(input_ids, masks=masks)
         tp, fp, fn = metrics.flat_ner_stats(preds, targets, masks, self.idx2tag)
         precision, recall, f1 = metrics.get_f1_score(tp, fp, fn)
 

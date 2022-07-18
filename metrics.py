@@ -106,5 +106,5 @@ if __name__ == '__main__':
     tag_ids_target = torch.LongTensor([[0, 1, 2, 2, 1, 2, 2, 0, 0, 3, 4, 4, 0, 0, 3]])
     masks_test = torch.LongTensor([[1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1]])
 
-    # print(get_ner_labels(tag_ids_test, id2tag_test))
+    print(get_ner_labels(tag_ids_test[0], masks_test[0], id2tag_test))
     print(flat_ner_stats(tag_ids_test, tag_ids_target, masks_test, id2tag_test ))

@@ -3,14 +3,26 @@ trainer:
   logger: true
   checkpoint_callback: null
   enable_checkpointing: true
-  callbacks: null
+  callbacks:
+  - class_path: pytorch_lightning.callbacks.EarlyStopping
+    init_args:
+      monitor: f1_score
+      min_delta: 0.0
+      patience: 5
+      verbose: false
+      mode: max
+      strict: true
+      check_finite: true
+      stopping_threshold: null
+      divergence_threshold: null
+      check_on_train_epoch_end: null
   default_root_dir: null
   gradient_clip_val: null
   gradient_clip_algorithm: null
   process_position: 0
   num_nodes: 1
   num_processes: null
-  devices: null
+  devices: 1
   gpus: null
   auto_select_gpus: false
   tpu_cores: null
@@ -21,9 +33,9 @@ trainer:
   overfit_batches: 0.0
   track_grad_norm: -1
   check_val_every_n_epoch: 1
-  fast_dev_run: 5
+  fast_dev_run: false
   accumulate_grad_batches: null
-  max_epochs: null
+  max_epochs: 100
   min_epochs: null
   max_steps: -1
   min_steps: null
@@ -35,7 +47,7 @@ trainer:
   val_check_interval: null
   flush_logs_every_n_steps: null
   log_every_n_steps: 50
-  accelerator: null
+  accelerator: gpu
   strategy: null
   sync_batchnorm: false
   precision: 32

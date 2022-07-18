@@ -64,7 +64,6 @@ class MultiHeadAttention(nn.Module):
 
     def forward(self, query, key, value, masks=None, inference=False):
         # [batch_size, seq_len, hidden_size]  [batch_size, num_labels, hidden_size]
-        print(key[0][0][0])
         query_proj = self.query_proj(query)
         key_proj = self.key_proj(key)
         value_proj = self.value_proj(value)
