@@ -23,14 +23,82 @@ optimizer_params = {
 }
 
 
-class BertBasedModule(pl.LightningModule):
+class NERModule(pl.LightningModule):
+    def __init__(self):
+        super(NERModule, self).__init__()
+
+    def compute_step_states(self, batch, validation=True):
+        input_ids, targets, masks = batch
+        preds, loss = self(input_ids, targets, masks)
+        tp, fp, fn = metrics.flat_ner_stats(preds, targets, masks, self.idx2tag)
+        recall, precision, f1 = metrics.get_f1_score(tp, fp, fn)
+
+        logs = {
+            'tp': tp,
+            'fp': fp,
+            'fn': fn,
+            'loss': loss,
+            'f1_score': f1,
+            'recall': recall,
+            'precision': precision
+        }
+        if validation:
+            logs = {'val_' + key: value for key, value in logs.items()}
+
+        return logs
+
+    def compute_epoch_states(self, outputs, validation=True):
+        if validation:
+            tps = torch.Tensor([output['val_tp'] for output in outputs]).sum()
+            fps = torch.Tensor([output['val_fp'] for output in outputs]).sum()
+            fns = torch.Tensor([output['val_fn'] for output in outputs]).sum()
+            loss = torch.stack([output['val_loss'] for output in outputs]).mean()
+        else:
+            tps = torch.Tensor([output['tp'] for output in outputs]).sum()
+            fps = torch.Tensor([output['fp'] for output in outputs]).sum()
+            fns = torch.Tensor([output['fn'] for output in outputs]).sum()
+            loss = torch.stack([output['loss'] for output in outputs]).mean()
+        recall, precision, f1 = metrics.get_f1_score(tps, fps, fns)
+
+        logs = {
+            'tp': tps,
+            'fp': fps,
+            'fn': fns,
+            'loss': loss,
+            'f1_score': f1,
+            'recall': recall,
+            'precision': precision
+        }
+        if validation:
+            logs = {'val_' + key: value for key, value in logs.items()}
+
+        self.log_dict(logs)
+
+    def training_step(self, batch, batch_idx):
+        logs = self.compute_step_states(batch, validation=False)
+        logs['lr'] = self.trainer.optimizers[0].param_groups[0]['lr']
+        self.log_dict(logs, on_epoch=True, prog_bar=True)
+        return logs
+
+    def training_epoch_end(self, outputs):
+        self.compute_epoch_states(outputs, validation=False)
+
+    def validation_step(self, batch, batch_idx):
+        logs = self.compute_step_states(batch)
+        self.log_dict(logs, prog_bar=True)
+        return logs
+
+    def validation_epoch_end(self, outputs):
+        self.compute_epoch_states(outputs)
+
+
+class BertBasedModule(NERModule):
     def __init__(self,
                  pretrained_model_name: str = 'bert-base-chinese',
                  warmup_steps: int = 1000,
-                 num_total_steps: int = 270000,
-                 *args, **kwargs
+                 num_total_steps: int = 270000
                  ):
-        super(BertBasedModule, self).__init__(*args, **kwargs)
+        super(BertBasedModule, self).__init__()
         self.warmup_steps = warmup_steps
         self.num_total_steps = num_total_steps
         self.bert = AutoModel.from_pretrained(pretrained_model_name)
@@ -128,52 +196,8 @@ class MRCNERModule(BertBasedModule):
 
         return logs
 
-    def compute_epoch_states(self, outputs, validation=True):
-        if validation:
-            tps = torch.Tensor([output['val_tp'] for output in outputs]).sum()
-            fps = torch.Tensor([output['val_fp'] for output in outputs]).sum()
-            fns = torch.Tensor([output['val_fn'] for output in outputs]).sum()
-            loss = torch.stack([output['val_loss'] for output in outputs]).mean()
-        else:
-            tps = torch.Tensor([output['tp'] for output in outputs]).sum()
-            fps = torch.Tensor([output['fp'] for output in outputs]).sum()
-            fns = torch.Tensor([output['fn'] for output in outputs]).sum()
-            loss = torch.stack([output['loss'] for output in outputs]).mean()
-        recall, precision, f1 = metrics.get_f1_score(tps, fps, fns)
 
-        logs = {
-            'tp': tps,
-            'fp': fps,
-            'fn': fns,
-            'loss': loss,
-            'f1_score': f1,
-            'recall': recall,
-            'precision': precision
-        }
-        if validation:
-            logs = {'val_' + key: value for key, value in logs.items()}
-
-        self.log_dict(logs)
-
-    def training_step(self, batch, batch_idx):
-        logs = self.compute_step_states(batch, validation=False)
-        logs['lr'] = self.trainer.optimizers[0].param_groups[0]['lr']
-        self.log_dict(logs, prog_bar=True, on_epoch=True)
-        return logs
-
-    def training_epoch_end(self, outputs):
-        self.compute_epoch_states(outputs, False)
-
-    def validation_step(self, batch, batch_idx):
-        logs = self.compute_step_states(batch)
-        self.log_dict(logs, prog_bar=True)
-        return logs
-
-    def validation_epoch_end(self, outputs):
-        self.compute_epoch_states(outputs)
-
-
-class BiLSTMLanNERModule(pl.LightningModule):
+class BiLSTMLanNERModule(NERModule):
     def __init__(self,
                  embedding_size: int = 128,
                  hidden_size: int = 128,
@@ -191,99 +215,34 @@ class BiLSTMLanNERModule(pl.LightningModule):
         self.label_embeddings = nn.Embedding(len(self.idx2tag), hidden_size)
         label_ids = torch.arange(0, len(self.idx2tag), dtype=torch.int64).unsqueeze(0)
         self.register_buffer('label_ids', label_ids)
-        # label_embeddings = torch.FloatTensor(self.num_labels, hidden_size)
-        # init.xavier_normal_(label_embeddings)
-        # self.register_buffer('label_embeddings', nn.Parameter(label_embeddings))
-
         self.models = nn.ModuleList([layers.BiLSTMLan(embedding_size, hidden_size, num_heads)])
         for i in range(0, num_layers - 2):
             self.models.append(layers.BiLSTMLan(hidden_size * 2, hidden_size, num_heads))
         self.models.append(layers.BiLSTMLan(hidden_size * 2, hidden_size, 1))
         self.save_hyperparameters()
 
-    def forward(self, input_ids, masks=None):
+    def forward(self, input_ids,tag_ids=None, masks=None):
         inputs = self.embeddings(input_ids)
         label_ids = self.label_ids.expand(input_ids.size(0), -1)
         for layer in self.models[: -1]:
             label_embeddings = self.label_embeddings(label_ids)
-            # label_embeddings = torch.unsqueeze(self.label_embeddings, 0).expand([inputs.size(0), -1, -1])
             inputs = layer(inputs, label_embeddings, masks)
 
-        # label_embeddings = torch.unsqueeze(self.label_embeddings, 0).expand([inputs.size(0), -1, -1])
         label_embeddings = self.label_embeddings(label_ids)
         outputs = self.models[-1](inputs, label_embeddings, masks, True)
-        return outputs
+        if tag_ids is None:
+            return outputs.argmax(-1)
 
-    def compute_step_states(self, batch, validation=True):
-        input_ids, targets, masks = batch
-        outputs = self(input_ids, masks)
+        loss = self.compute_loss(outputs, tag_ids, masks)
+        return outputs.argmax(-1), loss
+
+    def compute_loss(self, outputs, targets, masks=None):
         loss = F.cross_entropy(outputs.view(-1, self.num_labels), targets.view(-1), reduction='none', ignore_index=0) * masks.view(-1)
         loss = loss.sum() / masks.sum()
-
-        preds = outputs.argmax(-1)
-        tp, fp, fn = metrics.flat_ner_stats(preds, targets, masks, self.idx2tag)
-        precision, recall, f1 = metrics.get_f1_score(tp, fp, fn)
-
-        logs = {
-            'tp': tp,
-            'fp': fp,
-            'fn': fn,
-            'loss': loss,
-            'f1_score': f1,
-            'recall': recall,
-            'precision': precision
-        }
-        if validation:
-            logs = {'val_' + key: value for key, value in logs.items()}
-
-        return logs
-
-    def compute_epoch_states(self, outputs, validation=True):
-        if validation:
-            tps = torch.Tensor([output['val_tp'] for output in outputs]).sum()
-            fps = torch.Tensor([output['val_fp'] for output in outputs]).sum()
-            fns = torch.Tensor([output['val_fn'] for output in outputs]).sum()
-            loss = torch.stack([output['val_loss'] for output in outputs]).mean()
-        else:
-            tps = torch.Tensor([output['tp'] for output in outputs]).sum()
-            fps = torch.Tensor([output['fp'] for output in outputs]).sum()
-            fns = torch.Tensor([output['fn'] for output in outputs]).sum()
-            loss = torch.stack([output['loss'] for output in outputs]).mean()
-        recall, precision, f1 = metrics.get_f1_score(tps, fps, fns)
-
-        logs = {
-            'tp': tps,
-            'fp': fps,
-            'fn': fns,
-            'loss': loss,
-            'f1_score': f1,
-            'recall': recall,
-            'precision': precision
-        }
-        if validation:
-            logs = {'val_' + key: value for key, value in logs.items()}
-
-        self.log_dict(logs)
-
-    def training_step(self, batch, batch_idx):
-        logs = self.compute_step_states(batch, validation=False)
-        logs['lr'] = self.trainer.optimizers[0].param_groups[0]['lr']
-        self.log_dict(logs, on_epoch=True, prog_bar=True)
-        return logs
-
-    def training_epoch_end(self, outputs):
-        self.compute_epoch_states(outputs, validation=False)
-
-    def validation_step(self, batch, batch_idx):
-        logs = self.compute_step_states(batch)
-        self.log_dict(logs, prog_bar=True)
-        return logs
-
-    def validation_epoch_end(self, outputs):
-        self.compute_epoch_states(outputs)
+        return loss
 
 
-class BiLSTMCrfNERModule(pl.LightningModule):
+class BiLSTMCrfNERModule(NERModule):
     def __init__(self,
                  embedding_size: int = 128,
                  hidden_size: int = 128,
@@ -309,75 +268,11 @@ class BiLSTMCrfNERModule(pl.LightningModule):
         linear_outputs = F.softmax(linear_outputs, -1)
         if masks is not None:
             masks = torch.transpose(masks, 1, 0).bool()
+
+        outputs = self.crf.decode(linear_outputs, masks)
         if tag_ids is None:
-            return self.crf.decode(linear_outputs, masks)
+            return outputs
         tag_ids = torch.transpose(tag_ids, 1, 0)
         loss = self.crf(linear_outputs, tag_ids, masks)
-        return -loss
+        return outputs, -loss
 
-    def compute_step_states(self, batch, validation=True):
-        input_ids, targets, masks = batch
-        loss = self(input_ids, targets, masks)
-        loss = loss
-
-        preds = self(input_ids, masks=masks)
-        tp, fp, fn = metrics.flat_ner_stats(preds, targets, masks, self.idx2tag)
-        precision, recall, f1 = metrics.get_f1_score(tp, fp, fn)
-
-        logs = {
-            'tp': tp,
-            'fp': fp,
-            'fn': fn,
-            'loss': loss,
-            'f1_score': f1,
-            'recall': recall,
-            'precision': precision
-        }
-        if validation:
-            logs = {'val_' + key: value for key, value in logs.items()}
-
-        return logs
-
-    def compute_epoch_states(self, outputs, validation=True):
-        if validation:
-            tps = torch.Tensor([output['val_tp'] for output in outputs]).sum()
-            fps = torch.Tensor([output['val_fp'] for output in outputs]).sum()
-            fns = torch.Tensor([output['val_fn'] for output in outputs]).sum()
-            loss = torch.stack([output['val_loss'] for output in outputs]).mean()
-        else:
-            tps = torch.Tensor([output['tp'] for output in outputs]).sum()
-            fps = torch.Tensor([output['fp'] for output in outputs]).sum()
-            fns = torch.Tensor([output['fn'] for output in outputs]).sum()
-            loss = torch.stack([output['loss'] for output in outputs]).mean()
-        recall, precision, f1 = metrics.get_f1_score(tps, fps, fns)
-
-        logs = {
-            'tp': tps,
-            'fp': fps,
-            'fn': fns,
-            'loss': loss,
-            'f1_score': f1,
-            'recall': recall,
-            'precision': precision
-        }
-        if validation:
-            logs = {'val_' + key: value for key, value in logs.items()}
-
-        self.log_dict(logs)
-
-    def training_step(self, batch, batch_idx):
-        logs = self.compute_step_states(batch, validation=False)
-        logs['lr'] = self.trainer.optimizers[0].param_groups[0]['lr']
-        self.log_dict(logs, on_epoch=True, prog_bar=True)
-        return logs
-
-    def training_epoch_end(self, outputs):
-        self.compute_epoch_states(outputs, validation=False)
-
-    def validation_step(self, batch, batch_idx):
-        logs = self.compute_step_states(batch)
-        self.log_dict(logs, prog_bar=True)
-        return logs
-
-    def validation_epoch_end(self, outputs):
-        self.compute_epoch_states(outputs)
