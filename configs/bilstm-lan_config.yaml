@@ -6,7 +6,7 @@ trainer:
   callbacks:
   - class_path: pytorch_lightning.callbacks.EarlyStopping
     init_args:
-      monitor: f1_score
+      monitor: val_f1_score
       min_delta: 0.0
       patience: 5
       verbose: false

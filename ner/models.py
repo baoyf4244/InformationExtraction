@@ -27,69 +27,71 @@ class NERModule(pl.LightningModule):
     def __init__(self):
         super(NERModule, self).__init__()
 
-    def compute_step_states(self, batch, validation=True):
+    def compute_step_states(self, batch, stage):
         input_ids, targets, masks = batch
         preds, loss = self(input_ids, targets, masks)
         tp, fp, fn = metrics.flat_ner_stats(preds, targets, masks, self.idx2tag)
         recall, precision, f1 = metrics.get_f1_score(tp, fp, fn)
 
         logs = {
-            'tp': tp,
-            'fp': fp,
-            'fn': fn,
-            'loss': loss,
-            'f1_score': f1,
-            'recall': recall,
-            'precision': precision
+            stage + '_tp': tp,
+            stage + '_fp': fp,
+            stage + '_fn': fn,
+            stage + '_loss': loss,
+            stage + '_f1_score': f1,
+            stage + '_recall': recall,
+            stage + '_precision': precision
         }
-        if validation:
-            logs = {'val_' + key: value for key, value in logs.items()}
+
+        if stage == 'train':
+            logs['loss'] = logs['train_loss']
 
         return logs
 
-    def compute_epoch_states(self, outputs, validation=True):
-        if validation:
-            tps = torch.Tensor([output['val_tp'] for output in outputs]).sum()
-            fps = torch.Tensor([output['val_fp'] for output in outputs]).sum()
-            fns = torch.Tensor([output['val_fn'] for output in outputs]).sum()
-            loss = torch.stack([output['val_loss'] for output in outputs]).mean()
-        else:
-            tps = torch.Tensor([output['tp'] for output in outputs]).sum()
-            fps = torch.Tensor([output['fp'] for output in outputs]).sum()
-            fns = torch.Tensor([output['fn'] for output in outputs]).sum()
-            loss = torch.stack([output['loss'] for output in outputs]).mean()
+    def compute_epoch_states(self, outputs, stage='val'):
+        tps = torch.Tensor([output[stage + '_tp'] for output in outputs]).sum()
+        fps = torch.Tensor([output[stage + '_fp'] for output in outputs]).sum()
+        fns = torch.Tensor([output[stage + '_fn'] for output in outputs]).sum()
+        loss = torch.stack([output[stage + '_loss'] for output in outputs]).mean()
+
         recall, precision, f1 = metrics.get_f1_score(tps, fps, fns)
 
         logs = {
-            'tp': tps,
-            'fp': fps,
-            'fn': fns,
-            'loss': loss,
-            'f1_score': f1,
-            'recall': recall,
-            'precision': precision
+            stage + '_tp': tps,
+            stage + '_fp': fps,
+            stage + '_fn': fns,
+            stage + '_loss': loss,
+            stage + '_f1_score': f1,
+            stage + '_recall': recall,
+            stage + '_precision': precision
         }
-        if validation:
-            logs = {'val_' + key: value for key, value in logs.items()}
 
         self.log_dict(logs)
 
     def training_step(self, batch, batch_idx):
-        logs = self.compute_step_states(batch, validation=False)
+        logs = self.compute_step_states(batch, stage='train')
         logs['lr'] = self.trainer.optimizers[0].param_groups[0]['lr']
         self.log_dict(logs, on_epoch=True, prog_bar=True)
         return logs
 
     def training_epoch_end(self, outputs):
-        self.compute_epoch_states(outputs, validation=False)
+        self.compute_epoch_states(outputs, stage='train')
 
     def validation_step(self, batch, batch_idx):
-        logs = self.compute_step_states(batch)
+        logs = self.compute_step_states(batch, stage='val')
         self.log_dict(logs, prog_bar=True)
         return logs
 
     def validation_epoch_end(self, outputs):
-        self.compute_epoch_states(outputs)
+        self.compute_epoch_states(outputs, stage='val')
+
+    def test_step(self, batch, batch_idx):
+        logs = self.compute_step_states(batch, stage='test')
+        self.log_dict(logs, prog_bar=True)
+        return logs
+
+    def test_epoch_end(self, outputs):
+        self.compute_epoch_states(outputs, stage='test')
 
 
 class BertBasedModule(NERModule):
@@ -158,7 +160,7 @@ class MRCNERModule(BertBasedModule):
         loss = (loss * masks).sum() / masks.sum()
         return loss
 
-    def compute_step_states(self, batch, validation=True):
+    def compute_step_states(self, batch, stage):
         input_ids, attention_mask, token_type_ids, start_labels, end_labels, span_labels = batch
         start_logits, end_logits, span_logits = self(input_ids, attention_mask, token_type_ids)
 
@@ -181,18 +183,19 @@ class MRCNERModule(BertBasedModule):
         recall, precision, f1 = metrics.get_f1_score(tp, fp, fn)
 
         logs = {
-            'tp': tp,
-            'fp': fp,
-            'fn': fn,
-            'f1_score': f1,
-            'recall': recall,
-            'precision': precision,
-            'loss': loss,
-            'start_loss': start_loss,
-            'end_loss': end_loss
+            stage + '_tp': tp,
+            stage + '_fp': fp,
+            stage + '_fn': fn,
+            stage + '_f1_score': f1,
+            stage + '_recall': recall,
+            stage + '_precision': precision,
+            stage + '_loss': loss,
+            stage + '_start_loss': start_loss,
+            stage + '_end_loss': end_loss
         }
-        if validation:
-            logs = {'val_' + key: value for key, value in logs.items()}
+
+        if stage == 'train':
+            logs['loss'] = logs['train_loss']
 
         return logs
 
