@@ -76,8 +76,11 @@ class MultiHeadAttention(nn.Module):
         # [batch_size * num_head, seq_len, num_labels]
         alpha = torch.bmm(query_proj, torch.transpose(key_proj, 1, 2)) / math.sqrt(self.hidden_size)
         if masks is not None:
-            masks = torch.unsqueeze(masks, -1).expand(-1, -1, alpha.size(-1)).repeat(self.num_heads, 1, 1)
-            alpha = alpha * masks
+            other = torch.as_tensor(masks, dtype=torch.float)
+            other[:] = float('-inf')
+            masks_float = torch.where(masks > 0, masks.float(), other)
+            masks_float = torch.unsqueeze(masks_float, -1).expand(-1, -1, alpha.size(-1)).repeat(self.num_heads, 1, 1)
+            alpha = alpha * masks_float
 
         if inference:
             assert self.num_heads == 1, 'MultiHeadAttention用于最后一层推理时num_heads 必须为1'
