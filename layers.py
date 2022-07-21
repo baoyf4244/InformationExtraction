@@ -63,6 +63,15 @@ class MultiHeadAttention(nn.Module):
         self.value_proj = nn.Sequential(nn.Linear(self.hidden_size, self.hidden_size), nn.ReLU())
 
     def forward(self, query, key, value, masks=None, inference=False):
+        """
+        multi-head attention layer
+        :param query: [batch_size, seq_len, hidden_size]
+        :param key: [batch_size, seq_len, hidden_size]
+        :param value: [batch_size, seq_len, hidden_size]
+        :param masks: [batch_size, seq_len]
+        :param inference: bool, ner(bilstm-lan)的解码层需要设为True， 其他场景一律设为False
+        :return:
+        """
         # [batch_size, seq_len, hidden_size]  [batch_size, num_labels, hidden_size]
         query_proj = self.query_proj(query)
         key_proj = self.key_proj(key)
@@ -74,19 +83,19 @@ class MultiHeadAttention(nn.Module):
         value_proj = torch.cat(torch.chunk(value_proj, self.num_heads, dim=2), 0)
 
         # [batch_size * num_head, seq_len, num_labels]
-        alpha = torch.bmm(query_proj, torch.transpose(key_proj, 1, 2)) / math.sqrt(self.hidden_size)
+        alpha = torch.bmm(query_proj, torch.transpose(key_proj, 1, 2)) / (key_proj.size(-1) ** 0.5)
+
+        if not inference:
+            alpha = F.softmax(alpha, dim=-1)
+
         if masks is not None:
-            other = torch.as_tensor(masks, dtype=torch.float)
-            other[:] = float('-inf')
-            masks_float = torch.where(masks > 0, masks.float(), other)
-            masks_float = torch.unsqueeze(masks_float, -1).expand(-1, -1, alpha.size(-1)).repeat(self.num_heads, 1, 1)
-            alpha = alpha * masks_float
+            masks = torch.unsqueeze(masks, -1).expand(-1, -1, alpha.size(-1)).repeat(self.num_heads, 1, 1)
+            alpha = alpha * masks
 
         if inference:
             assert self.num_heads == 1, 'MultiHeadAttention用于最后一层推理时num_heads 必须为1'
             return alpha
 
-        alpha = F.softmax(alpha, dim=-1)
         hiddens = torch.bmm(alpha, value_proj)
         hiddens = torch.cat(torch.chunk(hiddens, self.num_heads, 0), -1)
 
@@ -98,12 +107,12 @@ class BiLSTMLan(nn.Module):
         super(BiLSTMLan, self).__init__()
         self.hidden_size = hidden_size
         self.num_heads = num_heads
-        self.lstm = nn.LSTM(input_size, hidden_size // 2, 1, batch_first=False, bidirectional=True)
+        self.lstm = nn.LSTM(input_size, hidden_size // 2, 1, batch_first=True, bidirectional=True)
         self.lan = MultiHeadAttention(num_heads, hidden_size)
 
     def forward(self, inputs, label_inputs, masks=None, inference=False):
         lstm_outputs, _ = self.lstm(inputs)
-        outputs = self.lan(lstm_outputs, label_inputs, label_inputs, masks, inference)
+        outputs = self.lan(lstm_outputs, label_inputs, label_inputs, masks, inference=inference)
         if inference:
             return outputs
         return torch.cat([outputs, lstm_outputs], dim=-1)

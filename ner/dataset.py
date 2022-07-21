@@ -47,6 +47,7 @@ class MRCNERDataset(NERDataSet):
         data_file: path to mrc-ner style json
         tokenizer: BertTokenizer
     """
+
     def __init__(self, data_file, tag_file, tokenizer: BertTokenizer, max_len=200, predict=False):
         super(MRCNERDataset, self).__init__(data_file, tag_file, tokenizer, max_len, predict)
         self.tag2query = self.get_tag2query()
@@ -275,5 +276,7 @@ if __name__ == '__main__':
     filename = 'D:/code/NLP/InformationExtraction/data/test.txt'
     tag_filename = 'D:/code/NLP/InformationExtraction/data/idx2tag.json'
     tokenizer = BertTokenizer.from_pretrained('bert-base-chinese')
-    dataset = FlatNERDataSet(filename, tag_filename, tokenizer)
-    print(dataset[0])
+    print(tokenizer.convert_tokens_to_ids(['[PAD]']))
+    # dataset = FlatNERDataSet(filename, tag_filename, tokenizer)
+    # dataset = FlatNERDataSet.collocate_fn(dataset[:10])
+    # print(dataset[0])

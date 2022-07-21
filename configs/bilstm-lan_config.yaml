@@ -73,11 +73,11 @@ trainer:
   stochastic_weight_avg: false
   terminate_on_nan: null
 model:
-  embedding_size: 100
+  embedding_size: 200
   hidden_size: 400
   vocab_size: 21128
   num_heads: 4
-  num_layers: 2
+  num_layers: 4
   tag_file: data/idx2tag.json
 data:
   data_dir: data

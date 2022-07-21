@@ -222,16 +222,16 @@ class BiLSTMLanNERModule(NERModule):
         for i in range(0, num_layers - 2):
             self.models.append(layers.BiLSTMLan(hidden_size * 2, hidden_size, num_heads))
         self.models.append(layers.BiLSTMLan(hidden_size * 2, hidden_size, 1))
+        self.loss = nn.NLLLoss(ignore_index=0, reduction='sum')
         self.save_hyperparameters()
 
-    def forward(self, input_ids,tag_ids=None, masks=None):
+    def forward(self, input_ids, tag_ids=None, masks=None):
         inputs = self.embeddings(input_ids)
         label_ids = self.label_ids.expand(input_ids.size(0), -1)
+        label_embeddings = self.label_embeddings(label_ids)
         for layer in self.models[: -1]:
-            label_embeddings = self.label_embeddings(label_ids)
             inputs = layer(inputs, label_embeddings, masks)
 
-        label_embeddings = self.label_embeddings(label_ids)
         outputs = self.models[-1](inputs, label_embeddings, masks, True)
         if tag_ids is None:
             return outputs.argmax(-1)
@@ -240,9 +240,12 @@ class BiLSTMLanNERModule(NERModule):
         return outputs.argmax(-1), loss
 
     def compute_loss(self, outputs, targets, masks=None):
-        loss = F.cross_entropy(outputs.view(-1, self.num_labels), targets.view(-1), reduction='none', ignore_index=0) * masks.view(-1)
-        loss = loss.sum() / masks.sum()
-        return loss
+        batch_size = outputs.size(0)
+        outputs = outputs.view(-1, self.num_labels)
+        outputs = F.log_softmax(outputs, dim=-1)
+        targets = targets.view(-1)
+        loss = self.loss(outputs, targets)
+        return loss / batch_size
 
 
 class BiLSTMCrfNERModule(NERModule):
@@ -261,21 +264,19 @@ class BiLSTMCrfNERModule(NERModule):
         self.embeddings = nn.Embedding(vocab_size, embedding_size)
         self.lstm = nn.LSTM(embedding_size, hidden_size, bidirectional=True, num_layers=num_layers, batch_first=True)
         self.linear = nn.Linear(hidden_size * 2, len(self.idx2tag))
-        self.crf = CRF(len(self.idx2tag))
+        self.crf = CRF(len(self.idx2tag), batch_first=True)
         self.save_hyperparameters()
 
     def forward(self, input_ids, tag_ids=None, masks=None):
         inputs = self.embeddings(input_ids)
         lstm_outputs, _ = self.lstm(inputs)
-        linear_outputs = torch.transpose(self.linear(lstm_outputs), 1, 0)
-        linear_outputs = F.softmax(linear_outputs, -1)
+        linear_outputs = F.softmax(lstm_outputs, -1)
         if masks is not None:
-            masks = torch.transpose(masks, 1, 0).bool()
+            masks = masks.bool()
 
         outputs = self.crf.decode(linear_outputs, masks)
         if tag_ids is None:
             return outputs
-        tag_ids = torch.transpose(tag_ids, 1, 0)
         loss = self.crf(linear_outputs, tag_ids, masks)
         return outputs, -loss
 
