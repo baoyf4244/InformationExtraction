@@ -270,7 +270,7 @@ class BiLSTMCrfNERModule(NERModule):
     def forward(self, input_ids, tag_ids=None, masks=None):
         inputs = self.embeddings(input_ids)
         lstm_outputs, _ = self.lstm(inputs)
-        linear_outputs = F.softmax(lstm_outputs, -1)
+        linear_outputs = self.linear(lstm_outputs)
         if masks is not None:
             masks = masks.bool()
 
@@ -278,5 +278,6 @@ class BiLSTMCrfNERModule(NERModule):
         if tag_ids is None:
             return outputs
         loss = self.crf(linear_outputs, tag_ids, masks)
+        loss = loss / input_ids.size(0)
         return outputs, -loss
 
