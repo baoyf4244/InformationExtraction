@@ -1,5 +1,5 @@
 import torch.nn.functional as F
-from ner.dataset import MRCNERDataset, FlatNERDataSet
+from ner.datasets import MRCNERDataset, FlatNERDataSet
 
 
 def act_func_factory(name):

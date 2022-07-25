@@ -1,5 +1,5 @@
 from ner.models import *
-from ner.dataset import *
+from ner.datasets import *
 from pytorch_lightning.utilities.cli import LightningCLI, LightningArgumentParser
 
 
