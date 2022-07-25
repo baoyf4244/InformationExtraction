@@ -39,6 +39,18 @@ class WhiteSpaceTokenizer:
             token_ids.append(self.word2idx[token] if token in self.word2idx else self.word2idx['<UNK>'])
         return token_ids
 
+    def get_pad_id(self):
+        return self.word2idx['<PAD>']
+
+    def get_unk_id(self):
+        return self.word2idx['<UNK>']
+
+    def get_eos_id(self):
+        return self.word2idx['<EOS>']
+
+    def get_vocab_size(self):
+        return len(self.word2idx)
+
     @staticmethod
     def tokenize(text):
         return text.strip().split()
