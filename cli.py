@@ -22,7 +22,7 @@ class MyLightningCli(LightningCLI):
         super(MyLightningCli, self).__init__(*args, **kwargs)
 
     def add_arguments_to_parser(self, parser: LightningArgumentParser) -> None:
-        parser.link_arguments('model_name', 'data.model_name')
+        parser.link_arguments('model_name', 'data.model_name', apply_on='')
 
 
 if __name__ == '__main__':

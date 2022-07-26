@@ -1,4 +1,3 @@
-import math
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
@@ -118,11 +117,66 @@ class BiLSTMLan(nn.Module):
         return torch.cat([outputs, lstm_outputs], dim=-1)
 
 
+class Encoder(nn.Module):
+    def __init__(self, input_size, hidden_size, num_layers, bidirectional=True):
+        super(Encoder, self).__init__()
+        self.lstm = nn.LSTM(input_size, hidden_size // 2, num_layers, batch_first=True, bidirectional=bidirectional)
+
+    def forward(self, inputs):
+        outputs, _ = self.lstm(inputs)
+        return outputs
 
 
+class Decoder(nn.Module):
+    def __init__(self, input_size, hidden_size, vocab_size):
+        super(Decoder, self).__init__()
+        self.lstm = nn.LSTMCell(input_size + hidden_size, hidden_size)
+        self.att = BahdanauAttention(hidden_size, hidden_size)
+        self.decoder = nn.Linear(hidden_size, vocab_size)
+
+    def forward(self, encoder_outputs, encoder_masks, decoder_input, decode_hidden):
+        """
+
+        Args:
+            encoder_outputs: [bs, es, hs]
+            encoder_masks: [bs, ts]
+            decoder_input: [bs, hs]
+            decode_hidden: (h, c) [bs, hs]
+
+        Returns:
+
+        """
+        if decoder_input.dim() == 3 and decoder_input.size(1) == 1:
+            decoder_input = torch.squeeze(decoder_input)
+
+        att_outputs, att_scores = self.att(decode_hidden[0], encoder_outputs, encoder_masks)
+        hidden, cell = self.lstm(torch.cat([att_outputs, decoder_input], 1), decode_hidden)
+        output = self.decoder(hidden)  # [bs, vs]
+
+        return output, (hidden, cell), att_scores
 
 
+class BahdanauAttention(nn.Module):
+    def __init__(self, input_size, hidden_size):
+        super(BahdanauAttention, self).__init__()
+        self.key = nn.Linear(input_size, hidden_size)
+        self.query = nn.Linear(input_size, hidden_size)
+        self.attention = nn.Linear(hidden_size, 1)
 
+    def forward(self, query, key, masks):
+        if query.dim() == 2:
+            query = torch.unsqueeze(query, 1).expand(-1, key.size(1), -1)
+
+        query_proj = self.query(query)
+        key_proj = self.key(key)
+
+        score = self.attention(F.tanh(query_proj + key_proj))  # [bs, ts, 1]
+        score = torch.squeeze(score)
+        score = torch.masked_fill(score, masks, float('-inf'))
+        score = F.softmax(score, -1)  # [bs, ts]
+
+        outputs = torch.bmm(torch.unsqueeze(score, 1), key).squeeze()  # [bs, input_size]
+        return outputs, score
 
 
 
