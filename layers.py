@@ -170,7 +170,7 @@ class BahdanauAttention(nn.Module):
         query_proj = self.query(query)
         key_proj = self.key(key)
 
-        score = self.attention(F.tanh(query_proj + key_proj))  # [bs, ts, 1]
+        score = self.attention(torch.tanh(query_proj + key_proj))  # [bs, ts, 1]
         score = torch.squeeze(score)
         score = torch.masked_fill(score, masks, float('-inf'))
         score = F.softmax(score, -1)  # [bs, ts]

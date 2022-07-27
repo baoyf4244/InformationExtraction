@@ -46,6 +46,9 @@ class WhiteSpaceTokenizer:
             token_ids.append(self.word2idx[token] if token in self.word2idx else self.word2idx['<UNK>'])
         return token_ids
 
+    def convert_token_to_ids(self, token):
+        return self.word2idx[token] if token in self.word2idx else self.word2idx['<UNK>']
+
     def convert_ids_to_tokens(self, ids):
         return [self.vocab[idx] for idx in ids]
 
@@ -67,8 +70,11 @@ class WhiteSpaceTokenizer:
     def get_start_token(self):
         return '<SOS>'
 
-    def get_eos_id(self):
+    def get_end_id(self):
         return self.word2idx['<EOS>']
+
+    def get_end_token(self):
+        return '<EOS>'
 
     def get_triple_sep_id(self):
         return self.word2idx['|']

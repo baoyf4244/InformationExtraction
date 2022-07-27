@@ -25,23 +25,25 @@ class Seq2SeqNREModule(LightningModule):
         batch_size, seq_len, _ = encoder_outputs.size()
         hidden = (self.h0.expand(batch_size, -1), self.c0.expand(batch_size, -1))
         if inference:
-            decoder_input_ids = self.start_ids.repeat(batch_size, -1)
             decoder_max_steps = self.decoder_max_steps
         else:
-            decoder_input_ids = target_ids
             decoder_max_steps = target_ids.size(1)
 
         outputs = []
         att_scores = []
-        decoder_inputs = []
         for i in range(decoder_max_steps):
-            decoder_input = self.embedding(decoder_input_ids[:, i])
+            if i == 0:
+                decoder_input_id = self.start_ids.repeat(batch_size, 1)
+            elif inference:
+                decoder_input_id = outputs[-1].squeeze().argmax(-1)
+            else:
+                decoder_input_id = target_ids[:, i]
+            decoder_input = self.embedding(decoder_input_id)
             output, hidden, att_score = self.decoder(encoder_outputs, masks, decoder_input, hidden)
-            output = torch.masked_fill(output, input_vocab_maks, float('-inf'))
+            if inference:
+                output = torch.masked_fill(output, input_vocab_maks, float('-inf'))
             outputs.append(output.unsqueeze(1))
             att_scores.append(att_score.argmax(1, keepdim=True))
-            if i != decoder_max_steps - 1:
-                decoder_input_ids[:, i + 1] = output.argmax(1).detach()
 
         return torch.cat(outputs, 1), torch.cat(att_scores, 1)  # [bs, ts, vs], [bs, ts]/代表src_inputs的位置
 
@@ -56,7 +58,7 @@ class Seq2SeqNREModule(LightningModule):
             else:
                 pred = self.tokenizer.convert_id_to_tokens(pred_id)
 
-            if pred_id.item() == self.tokenizer.get_eos_id():
+            if pred_id.item() == self.tokenizer.get_end_id():
                 break
 
             preds.append(pred)
@@ -74,7 +76,7 @@ class Seq2SeqNREModule(LightningModule):
         correct_num = 0
         for pred, target in zip(preds, targets):
             pred_num += len(pred)
-            gold_num + len(target)
+            gold_num += len(target)
 
             for p, t in zip(pred, target):
                 if p == t:

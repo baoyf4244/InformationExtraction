@@ -31,9 +31,11 @@ class NREDataSet(Dataset):
         for token_id in token_ids:
             vocab_masks[token_id] = 0
 
-        vocab_masks[self.tokenizer.get_eos_id()] = 0
+        vocab_masks[self.tokenizer.get_end_id()] = 0
         vocab_masks[self.tokenizer.get_ele_sep_id()] = 0
         vocab_masks[self.tokenizer.get_triple_sep_id()] = 0
+        for relation in self.relations:
+            vocab_masks[self.tokenizer.convert_token_to_ids(relation)] = 0
 
         return vocab_masks
 
@@ -54,7 +56,7 @@ class NREDataSet(Dataset):
             data['masks'] = [0] * len(token_ids)
             data['vocab_masks'] = self.get_vocab_masks(token_ids)
 
-            targets = self.tokenizer.tokenize(triple)
+            targets = self.tokenizer.tokenize(triple) + [self.tokenizer.get_end_token()]
             target_ids = self.tokenizer.convert_tokens_to_ids(targets)
             data['targets'] = targets
             data['target_ids'] = target_ids
