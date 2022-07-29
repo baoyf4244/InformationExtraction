@@ -1,3 +1,5 @@
+<PAD>
+<SOS>
 /location/administrative_division/country
 /location/country/capital
 /location/country/administrative_divisions

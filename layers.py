@@ -129,6 +129,13 @@ class Encoder(nn.Module):
 
 class Decoder(nn.Module):
     def __init__(self, input_size, hidden_size, vocab_size):
+        """
+
+        Args:
+            input_size: tgt input size
+            hidden_size: src tgt hidden size, 为方便此处相同
+            vocab_size:
+        """
         super(Decoder, self).__init__()
         self.lstm = nn.LSTMCell(input_size + hidden_size, hidden_size)
         self.att = BahdanauAttention(hidden_size, hidden_size)
