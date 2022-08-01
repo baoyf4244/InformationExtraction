@@ -50,10 +50,40 @@ class PointGeneratorNetWork(nn.Module):
 
 
 class Coverage(nn.Module):
-    def __init__(self, ):
+    def __init__(self, encoder_hidden_size, decoder_hidden_size, hidden_size):
         super(Coverage, self).__init__()
-        self.register_buffer('memory', torch.zeros([1, ]))
-        self.linear = nn.Linear()
+        self.query = nn.Linear(decoder_hidden_size, hidden_size)
+        self.key = nn.Linear(encoder_hidden_size, hidden_size)
+        self.memery = nn.Linear(1, hidden_size)
+        self.coverage = nn.Linear(hidden_size, 1)
+
+    def forward(self, encoder_outputs, decoder_inputs, coverage_inputs, encoder_masks):
+        """
+
+        Args:
+            encoder_outputs: [bs, ts, ehs]
+            decoder_inputs: [bs, dhs]
+            coverage_inputs: [bs, ts]
+
+        Returns:
+
+        """
+        _, seq_len, _ = encoder_outputs.size()
+        if decoder_inputs.dim() == 2:
+            decoder_inputs = torch.unsqueeze(decoder_inputs, 1).expand(-1, seq_len, -1)
+
+        if coverage_inputs.dim() == 2:
+            coverage_inputs = torch.unsqueeze(coverage_inputs, -1)
+
+        query = self.query(decoder_inputs)
+        key = self.key(decoder_inputs)
+        memery = self.memery(coverage_inputs)
+
+        coverage_scores = self.coverage(F.tanh(query + key + memery)).squeeze()  # [bs, ts]
+        coverage_scores = torch.masked_fill(coverage_scores, encoder_masks, float('-inf'))
+        coverage_scores = F.softmax(coverage_scores, -1)
+        coverage_outputs = torch.bmm(coverage_scores.unsqueeze(1), encoder_outputs)
+        return coverage_outputs.squeeze()
 
 
 class Decoder(nn.Module):
