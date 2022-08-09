@@ -1,6 +1,8 @@
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+from collections import namedtuple
+from tokenization import ChineseCharTokenizer
 from pytorch_lightning import LightningModule
 
 
@@ -57,13 +59,14 @@ class Coverage(nn.Module):
         self.memery = nn.Linear(1, hidden_size)
         self.coverage = nn.Linear(hidden_size, 1)
 
-    def forward(self, encoder_outputs, decoder_inputs, coverage_inputs, encoder_masks):
+    def forward(self, encoder_outputs, decoder_inputs, encoder_masks, coverage_inputs):
         """
 
         Args:
+            coverage_inputs: [bs, ts]
             encoder_outputs: [bs, ts, ehs]
             decoder_inputs: [bs, dhs]
-            coverage_inputs: [bs, ts]
+            encoder_masks: [bs, ts]
 
         Returns:
 
@@ -72,26 +75,179 @@ class Coverage(nn.Module):
         if decoder_inputs.dim() == 2:
             decoder_inputs = torch.unsqueeze(decoder_inputs, 1).expand(-1, seq_len, -1)
 
-        if coverage_inputs.dim() == 2:
-            coverage_inputs = torch.unsqueeze(coverage_inputs, -1)
-
         query = self.query(decoder_inputs)
-        key = self.key(decoder_inputs)
-        memery = self.memery(coverage_inputs)
+        key = self.key(encoder_outputs)
+        memery = self.memery(coverage_inputs.unsqueeze(-1))
 
         coverage_scores = self.coverage(F.tanh(query + key + memery)).squeeze()  # [bs, ts]
         coverage_scores = torch.masked_fill(coverage_scores, encoder_masks, float('-inf'))
         coverage_scores = F.softmax(coverage_scores, -1)
-        coverage_outputs = torch.bmm(coverage_scores.unsqueeze(1), encoder_outputs)
-        return coverage_outputs.squeeze()
+        coverage_outputs = torch.bmm(coverage_scores.unsqueeze(1), encoder_outputs)  # [bs, 1, ehs]
+        return coverage_outputs.squeeze(), coverage_scores
 
 
 class Decoder(nn.Module):
-    def __init__(self, input_size, hidden_size):
+    def __init__(self, encoder_hidden_size, decoder_input_size, decoder_hidden_size, attention_hidden_size,
+                 coverage=True):
         super(Decoder, self).__init__()
-        self.lstm = nn.LSTMCell(input_size, hidden_size)
+        self.coverage = coverage
+        self.lstm = nn.LSTMCell(decoder_input_size + encoder_hidden_size, decoder_hidden_size)
+        if coverage:
+            self.attention = Coverage(encoder_hidden_size, decoder_hidden_size, attention_hidden_size)
+        else:
+            self.attention = BahdanauAttention(decoder_hidden_size, encoder_hidden_size, attention_hidden_size)
+
+    def forward(self, encoder_outputs, decoder_input, decoder_hidden, encoder_masks, coverage_inputs=None):
+        """
+
+        Args:
+            encoder_outputs:
+            decoder_input: y_i-1
+            decoder_hidden: (h, c)
+            encoder_masks:
+            coverage_inputs: self.coverage为true时传参, [bs, ehs]
+        Returns:
+
+        """
+        if self.coverage:
+            attention_outputs, attention_scores = self.attention(encoder_outputs, decoder_hidden[0], encoder_masks, coverage_inputs)
+        else:
+            attention_outputs, attention_scores = self.attention(decoder_hidden[0], encoder_outputs, encoder_masks)
+        decoder_hidden = self.lstm(torch.cat([attention_outputs, decoder_input], -1), decoder_hidden)
+        return decoder_hidden, attention_outputs, attention_scores
 
 
 class Seq2SeqKPEModule(LightningModule):
-    def __init__(self):
+    def __init__(self, vocab_size, embedding_size, hidden_size, num_layers, decoder_max_steps, beam_size,
+                 tokenizer: ChineseCharTokenizer, coverage=True):
         super(Seq2SeqKPEModule, self).__init__()
+        self.coverage = coverage
+        self.beam_size = beam_size
+        self.tokenizer = tokenizer
+        self.decoder_max_steps = decoder_max_steps
+        self.embedding = nn.Embedding(vocab_size, embedding_size)
+        self.encoder = Encoder(embedding_size, hidden_size, num_layers)
+        self.decoder = Decoder(hidden_size, embedding_size, hidden_size, hidden_size, coverage)
+        self.pointer = PointGeneratorNetWork(hidden_size, hidden_size, embedding_size)
+        if coverage:
+            self.register_buffer('coverage_memery', torch.zeros(1, 1))
+
+        self.register_buffer('start_ids', torch.zeros())
+
+        self.linear = nn.Sequential(nn.Linear(hidden_size + hidden_size, hidden_size), nn.Linear(hidden_size, vocab_size))
+
+    def decode(self, encoder_outputs, encoder_masks, encoder_vocab,
+               oov_ids, decoder_input_ids, decoder_hidden, coverage_memery):
+        """
+
+        Args:
+            decoder_input_ids:
+            encoder_outputs:
+            encoder_masks:
+            encoder_vocab: 将 UNK 替换为oov_id后的input_ids
+            oov_ids:
+            decoder_hidden:
+            coverage_memery:
+
+        Returns:
+
+        """
+        decoder_input = self.embedding(decoder_input_ids)
+        decoder_hidden, attention_output, attention_scores = self.decoder(encoder_outputs, decoder_input,
+                                                                          decoder_hidden, encoder_masks, coverage_memery)
+        if self.coverage:
+            coverage_memery += attention_scores
+        p_vocab = self.linear(torch.cat([decoder_hidden[0], attention_output], -1))
+        p_vocab_extended = torch.cat([p_vocab, torch.as_tensor(oov_ids).fill_(0)], -1)
+        p_gen = self.pointer(attention_output, decoder_hidden[0], decoder_input)
+        p = p_gen * p_vocab_extended
+        p.scatter_add_(1, encoder_vocab, (1 - p_gen) * attention_scores)
+
+        return p, decoder_hidden, coverage_memery
+
+    def forward(self, input_ids, input_masks, input_vocab_ids, oov_ids, target_ids):
+        inputs = self.embedding(input_ids)
+        encoder_outputs, encoder_hidden = self.encoder(inputs)
+        decoder_hidden = encoder_hidden
+
+        if self.coverage:
+            coverage_memery = self.coverage_memery.repeat(input_ids.size())
+        else:
+            coverage_memery = None
+
+        decoder_max_steps = target_ids.size(1)
+
+        props = []
+        for i in range(decoder_max_steps):
+            decoder_input_ids = target_ids[:, i]
+            p, decoder_hidden, coverage_memery = self.decode(encoder_outputs, input_masks, input_vocab_ids, oov_ids,
+                                                             decoder_input_ids, decoder_hidden, coverage_memery)
+            props.append(p)
+        return torch.cat(props, -1)
+
+    def get_seqs(self, input_ids, idx2word, idx2oov):
+        seqs = []
+        for input_id in input_ids:
+            if input_id == self.tokenizer.get_end_id():
+                break
+            seqs.append(idx2word[input_id] if input_id >= len(idx2word) else idx2oov[input_id])
+
+        return seqs
+
+    def get_batch_seqs(self, props, idx2word, idx2oovs):
+        pred_ids = props.argmax(props).detach().cpu().numpy().tolist()
+        seqs = []
+        for pred_id, idx2oov in zip(pred_ids, idx2oovs):
+            seq = self.get_seqs(pred_id, idx2word, idx2oov)
+            seqs.append(seq)
+        return seqs
+
+    @staticmethod
+    def get_f1_stats(preds, targets):
+        pred_num = 0
+        gold_num = 0
+        correct_num = 0
+        for pred, target in zip(preds, targets):
+            pred = ''.join(pred[1: -1]).split()
+            pred_num += len(pred)
+            gold_num += len(target)
+            correct_num += len((set(pred).intersection(set(target))))
+        return pred_num, gold_num, correct_num
+
+    @staticmethod
+    def get_f1_score(pred_num, gold_num, correct_num):
+        recall = correct_num / (gold_num + 1e-8)
+        precision = correct_num / (pred_num + 1e-8)
+        f1 = 2 * recall * precision / (recall + precision + 1e-8)
+        return recall, precision, f1
+
+    def compute_stage_stats(self, batch, stage):
+        input_ids, input_masks, input_vocab_ids, oov_ids, idx2oov, target_ids, targets = batch
+        props = self(input_ids, input_masks, input_vocab_ids, oov_ids, target_ids)
+        seqs = self.get_batch_seqs(props, self.tokenizer.get_vocab(), idx2oov)
+        loss = -torch.log(torch.gather(props, 1, target_ids.unsqueeze(-1)))
+
+        pred_num, gold_num, correct_num = self.get_f1_stats(seqs, targets)
+        recall, precision, f1_score = self.get_f1_score(pred_num, gold_num, correct_num)
+
+        logs = {
+            stage + '_loss': loss,
+            stage + '_pred_num': pred_num,
+            stage + '_gold_num': gold_num,
+            stage + '_correct_num': correct_num,
+            stage + '_recall': recall,
+            stage + '_precision': precision,
+            stage + '_f1_score': f1_score
+        }
+        if stage == 'train':
+            logs['loss'] = logs['train_loss']
+
+        self.log_dict(logs, on_epoch=True, on_step=True, prog_bar=True)
+        return logs
+
+    def training_step(self, batch, batch_idx):
+        logs = self.compute_stage_stats(batch, 'train')
+        return logs
+
+
+

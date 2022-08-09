@@ -2,14 +2,14 @@ import os
 import torch
 from typing import Optional
 from torch.utils.data import Dataset, DataLoader, random_split
-from tokenization import CharTokenizer, WhiteSpaceTokenizer
+from tokenization import ChineseCharTokenizer, EnglishLabelTokenizer
 from pytorch_lightning.utilities.types import TRAIN_DATALOADERS, EVAL_DATALOADERS
 from pytorch_lightning import LightningDataModule
 
 
 class NREDataSet(Dataset):
-    def __init__(self, sent_file, relations_file, tokenizer: WhiteSpaceTokenizer,
-                 char_tokenizer: CharTokenizer = None, triples_file=None):
+    def __init__(self, sent_file, relations_file, tokenizer: EnglishLabelTokenizer,
+                 char_tokenizer: ChineseCharTokenizer = None, triples_file=None):
         super(NREDataSet, self).__init__()
         self.sent_file = sent_file
         self.triples_file = triples_file
@@ -35,7 +35,7 @@ class NREDataSet(Dataset):
         vocab_masks[self.tokenizer.get_ele_sep_id()] = 0
         vocab_masks[self.tokenizer.get_triple_sep_id()] = 0
         for relation in self.relations:
-            vocab_masks[self.tokenizer.convert_token_to_ids(relation)] = 0
+            vocab_masks[self.tokenizer.convert_token_to_id(relation)] = 0
 
         return vocab_masks
 
@@ -92,8 +92,8 @@ class NREDataSet(Dataset):
 
 
 class PTRNREDataSet(Dataset):
-    def __init__(self, sent_file, relations_file, tokenizer: WhiteSpaceTokenizer,
-                 char_tokenizer: CharTokenizer = None, triples_file=None):
+    def __init__(self, sent_file, relations_file, tokenizer: EnglishLabelTokenizer,
+                 char_tokenizer: ChineseCharTokenizer = None, triples_file=None):
         super(PTRNREDataSet, self).__init__()
         self.sent_file = sent_file
         self.triples_file = triples_file
@@ -201,7 +201,7 @@ class NREDataModule(LightningDataModule):
         self.max_len = max_len
         self.batch_size = batch_size
         self.relation_file = relation_file
-        self.tokenizer = WhiteSpaceTokenizer(vocab_file)
+        self.tokenizer = EnglishLabelTokenizer(vocab_file)
         self.train_dataset = None
         self.val_dataset = None
         self.test_dataset = None
@@ -253,7 +253,7 @@ if __name__ == '__main__':
     data_file = 'C:/Users/ML-YX01/code/InformationExtraction/data/nre/dev.sent'
     relations = 'C:/Users/ML-YX01/code/InformationExtraction/data/nre/relations.txt'
     triples_file = 'C:/Users/ML-YX01/code/InformationExtraction/data/nre/dev.tup'
-    tokenizer = WhiteSpaceTokenizer(vocab_file, data_file, relations)
+    tokenizer = EnglishLabelTokenizer(vocab_file, data_file, relations)
     dataset = NREDataSet(data_file, relations, tokenizer, triples_file=triples_file)
     print(dataset[0])
     print(NREDataSet.collocate_fn(dataset[: 10]))

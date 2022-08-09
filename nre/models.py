@@ -3,14 +3,14 @@ import torch.nn as nn
 import torch.nn.functional as F
 from pytorch_lightning import LightningModule
 from layers import Encoder, Decoder, BahdanauAttention
-from tokenization import WhiteSpaceTokenizer
+from tokenization import EnglishLabelTokenizer
 
 
 class Seq2SeqNREModule(LightningModule):
     def __init__(self, vocab_file, embedding_size, hidden_size, num_layers, decoder_max_steps):
         super(Seq2SeqNREModule, self).__init__()
         self.decoder_max_steps = decoder_max_steps
-        self.tokenizer = WhiteSpaceTokenizer(vocab_file)
+        self.tokenizer = EnglishLabelTokenizer(vocab_file)
         self.embedding = nn.Embedding(self.tokenizer.get_vocab_size(), embedding_size)
         self.encoder = Encoder(embedding_size, hidden_size, num_layers)
         self.decoder = Decoder(embedding_size, hidden_size, self.tokenizer.get_vocab_size())
@@ -56,7 +56,7 @@ class Seq2SeqNREModule(LightningModule):
                 else:
                     pred = self.tokenizer.get_pad_token()
             else:
-                pred = self.tokenizer.convert_id_to_tokens(pred_id)
+                pred = self.tokenizer.convert_id_to_token(pred_id)
 
             if pred_id.item() == self.tokenizer.get_end_id():
                 break
