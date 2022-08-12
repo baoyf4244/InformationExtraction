@@ -1,3 +1,4 @@
+import json
 import sys
 from collections import Counter
 
@@ -14,7 +15,8 @@ class Tokenizer:
         self.min_freq = min_freq
         self.vocab = [self.pad_token, self.unk_token, self.start_token, self.end_token]
         self.word2idx = None
-        
+        self.init()
+
     def init(self):
         self.load_vocab()
         self.add_special_tokens()
@@ -128,12 +130,14 @@ class EnglishLabelTokenizer(WhiteSpaceTokenizer):
 
 
 class ChineseCharTokenizer(Tokenizer):
-    def __int__(self, vocab_file, data_file=None, max_freq=None, min_freq=0):
-        super(ChineseCharTokenizer, self).__init__(vocab_file, data_file, max_freq, min_freq)
+    def __init__(self, vocab_file, data_file=None, max_freq=None, min_freq=1):
+        super().__init__(vocab_file, data_file, max_freq, min_freq)
         self.sep_token = '|'
 
     def add_special_tokens(self):
-        self.vocab.pop(self.vocab.index(self.sep_token))
+        self.sep_token = '|'
+        if self.sep_token in self.vocab:
+            self.vocab.pop(self.vocab.index(self.sep_token))
         self.vocab.append(self.sep_token)
 
     def get_sep_token(self):
@@ -145,3 +149,34 @@ class ChineseCharTokenizer(Tokenizer):
     @staticmethod
     def tokenize(text):
         return list(text)
+
+
+class KPEChineseCharTokenizer(ChineseCharTokenizer):
+    def __int__(self, vocab_file, data_file=None, max_freq=None, min_freq=0):
+        super(KPEChineseCharTokenizer, self).__init__(vocab_file, data_file, max_freq, min_freq)
+
+    def load_vocab(self):
+        try:
+            with open(self.vocab_file, encoding='utf-8') as f:
+                for line in f:
+                    if line.strip() not in self.vocab[: 4]:
+                        self.vocab.append(line.strip())
+        except Exception:
+            assert self.data_file is not None
+            counter = Counter()
+            with open(self.data_file, encoding='utf-8') as f:
+                for line in f:
+                    line = json.loads(line)
+                    tokens = self.tokenize(line['text']) + [self.tokenize(keyword) for keyword in line['keywords']]
+                    for token in tokens:
+                        if isinstance(token, list):
+                            counter.update(token)
+                        else:
+                            counter[token] += 1
+
+            for word, count in counter.items():
+                if self.min_freq < count < self.max_freq and word not in self.vocab[: 4]:
+                    self.vocab.append(word)
+
+            with open(self.vocab_file, mode='w', encoding='utf-8') as f:
+                f.write('\n'.join(self.vocab))

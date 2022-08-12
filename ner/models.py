@@ -71,7 +71,7 @@ class NERModule(pl.LightningModule):
     def training_step(self, batch, batch_idx):
         logs = self.compute_step_states(batch, stage='train')
         logs['lr'] = self.trainer.optimizers[0].param_groups[0]['lr']
-        self.log_dict(logs, on_epoch=True, prog_bar=True)
+        self.log_dict(logs, prog_bar=True)
         return logs
 
     def training_epoch_end(self, outputs):
