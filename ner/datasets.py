@@ -1,7 +1,6 @@
 import os
 import json
 import torch
-import factory
 from typing import Optional
 from collections import defaultdict
 
@@ -9,6 +8,19 @@ from pytorch_lightning.utilities.types import TRAIN_DATALOADERS, EVAL_DATALOADER
 from transformers import BertTokenizer
 from pytorch_lightning import LightningDataModule
 from torch.utils.data import Dataset, DataLoader, random_split
+
+
+def get_dataset(model_name):
+    dataset = {
+        'MRC': MRCNERDataset,
+        'BILSTM-LAN': FlatNERDataSet,
+        'BILSTM-CRF': FlatNERDataSet
+    }
+    model_name = model_name.upper()
+    if model_name in dataset:
+        return dataset[model_name]
+    else:
+        raise NotImplementedError
 
 
 class NERDataSet(Dataset):
@@ -225,7 +237,7 @@ class NERDataModule(LightningDataModule):
         self.data_dir = data_dir
         self.max_len = max_len
         self.batch_size = batch_size
-        self.dataset_class = factory.get_dataset(model_name)
+        self.dataset_class = get_dataset(model_name)
         self.tag_file = taf_file
         self.tokenizer = BertTokenizer.from_pretrained(pretrained_model_name)
         self.train_dataset = None

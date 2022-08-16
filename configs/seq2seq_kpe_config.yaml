@@ -98,7 +98,7 @@ model:
 data:
   data_dir: data/kpe
   max_len: 200
-  batch_size: 16
+  batch_size: 2
   vocab_file: data/kpe/vocab.txt
   min_freq: 5
 ckpt_path: null

@@ -68,7 +68,7 @@ class Coverage(nn.Module):
             coverage_inputs: [bs, ts]
             encoder_outputs: [bs, ts, ehs]
             decoder_inputs: [bs, dhs]
-            encoder_masks: [bs, ts]
+            encoder_masks: [bs, ts]  [[0, 0, ... , 1, 1, 1], ..., [...]]
 
         Returns:
 
@@ -156,6 +156,7 @@ class Seq2SeqKPEModule(LightningModule):
         Returns:
 
         """
+        encoder_masks = torch.logical_not(encoder_masks)
         decoder_input = self.embedding(decoder_input_ids)
         decoder_hidden, attention_output, attention_scores = self.decoder(encoder_outputs, decoder_input,
                                                                           decoder_hidden, encoder_masks, coverage_memery)
@@ -196,7 +197,10 @@ class Seq2SeqKPEModule(LightningModule):
         idx2oov = [{v: k for k, v in oov.items()} for oov in oov2idx]
         props = self(input_ids, input_masks, input_vocab_ids, oov_ids, target_ids)
         seqs = self.get_batch_seqs(props, self.tokenizer.get_vocab(), idx2oov)
-        loss = -torch.log(torch.gather(props, -1, target_ids.unsqueeze(-1)) + 1e-8) * target_masks.unsqueeze(-1).repeat(1, 1, props.size(-1))
+        # loss = torch.gather(props, -1, target_ids.unsqueeze(-1)).squeeze()
+        # loss = -torch.log(loss + 1e-8) * target_masks
+        loss = F.cross_entropy(props.view(-1, props.size(-1)), target_ids.view(-1), reduction='none')
+        loss = loss.view(-1, target_ids.size(1)) * target_masks
         loss = loss.sum() / loss.size(0)
         pred_num, gold_num, correct_num = self.get_f1_stats(seqs, targets)
         recall, precision, f1_score = self.get_f1_score(pred_num, gold_num, correct_num)
