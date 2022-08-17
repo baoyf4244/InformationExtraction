@@ -277,7 +277,7 @@ class Seq2SeqKPEModule(LightningModule):
         gold_num = 0
         correct_num = 0
         for pred, target in zip(preds, targets):
-            pred = ''.join(pred[1: -1]).split()
+            pred = ''.join(pred).split('|')
             pred_num += len(pred)
             gold_num += len(target)
             correct_num += len((set(pred).intersection(set(target))))
