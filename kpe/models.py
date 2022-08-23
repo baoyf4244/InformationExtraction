@@ -81,7 +81,7 @@ class Coverage(nn.Module):
         key = self.key(encoder_outputs)
         memery = self.memery(coverage_inputs.unsqueeze(-1))
 
-        coverage_scores = self.coverage(F.tanh(query + key + memery)).squeeze()  # [bs, ts]
+        coverage_scores = self.coverage(F.tanh(query + key + memery)).squeeze(-1)  # [bs, ts]
         coverage_scores = torch.masked_fill(coverage_scores, encoder_masks, float('-inf'))
         coverage_scores = F.softmax(coverage_scores, -1)
         coverage_outputs = torch.bmm(coverage_scores.unsqueeze(1), encoder_outputs)  # [bs, 1, ehs]
@@ -134,11 +134,35 @@ class Seq2SeqKPEModule(LightningModule):
         if coverage:
             self.register_buffer('coverage_memery', torch.zeros(1, 1))
 
-        self.register_buffer('start_ids', torch.zeros(1, 1))
+        self.register_buffer('start_ids', torch.LongTensor([self.tokenizer.get_start_id()]))
         self.register_buffer('vocab_extended', torch.zeros(1, 1))
 
         self.linear = nn.Sequential(nn.Linear(hidden_size + hidden_size, hidden_size),
                                     nn.Linear(hidden_size, self.tokenizer.get_vocab_size()))
+
+    def forward(self, input_ids, input_masks, input_vocab_ids, oov_ids, target_ids):
+        inputs = self.embedding(input_ids)
+        encoder_outputs, encoder_hidden = self.encoder(inputs)
+        decoder_hidden = (torch.cat(torch.chunk(encoder_hidden[0], 2, 0), -1).squeeze(0),
+                          torch.cat(torch.chunk(encoder_hidden[1], 2, 0), -1).squeeze(0))
+
+        if self.coverage:
+            coverage_memery = self.coverage_memery.repeat(input_ids.size())
+        else:
+            coverage_memery = None
+
+        decoder_max_steps = target_ids.size(1)
+
+        props = []
+        for i in range(decoder_max_steps):
+            if i == 0:
+                decoder_input_ids = self.start_ids.repeat([target_ids.size(0)])
+            else:
+                decoder_input_ids = target_ids[:, i]
+            p, decoder_hidden, coverage_memery = self.decode(encoder_outputs, input_masks, input_vocab_ids, oov_ids,
+                                                             decoder_input_ids, decoder_hidden, coverage_memery)
+            props.append(p.unsqueeze(1))
+        return torch.cat(props, 1)
 
     def decode(self, encoder_outputs, encoder_masks, encoder_vocab,
                oov_ids, decoder_input_ids, decoder_hidden, coverage_memery):
@@ -171,37 +195,17 @@ class Seq2SeqKPEModule(LightningModule):
 
         return p, decoder_hidden, coverage_memery
 
-    def forward(self, input_ids, input_masks, input_vocab_ids, oov_ids, target_ids):
-        inputs = self.embedding(input_ids)
-        encoder_outputs, encoder_hidden = self.encoder(inputs)
-        decoder_hidden = (torch.cat(torch.chunk(encoder_hidden[0], 2, 0), -1).squeeze(0),
-                          torch.cat(torch.chunk(encoder_hidden[1], 2, 0), -1).squeeze(0))
-
-        if self.coverage:
-            coverage_memery = self.coverage_memery.repeat(input_ids.size())
-        else:
-            coverage_memery = None
-
-        decoder_max_steps = target_ids.size(1)
-
-        props = []
-        for i in range(decoder_max_steps):
-            decoder_input_ids = target_ids[:, i]
-            p, decoder_hidden, coverage_memery = self.decode(encoder_outputs, input_masks, input_vocab_ids, oov_ids,
-                                                             decoder_input_ids, decoder_hidden, coverage_memery)
-            props.append(p.unsqueeze(1))
-        return torch.cat(props, 1)
-
     def compute_step_stats(self, batch, stage):
         ids, targets, input_ids, input_masks, target_ids, target_masks, input_vocab_ids, oov_ids, oov_id_masks, oov2idx = batch
         idx2oov = [{v: k for k, v in oov.items()} for oov in oov2idx]
         props = self(input_ids, input_masks, input_vocab_ids, oov_ids, target_ids)
-        seqs = self.get_batch_seqs(props, self.tokenizer.get_vocab(), idx2oov)
-        # loss = torch.gather(props, -1, target_ids.unsqueeze(-1)).squeeze()
-        # loss = -torch.log(loss + 1e-8) * target_masks
-        loss = F.cross_entropy(props.view(-1, props.size(-1)), target_ids.view(-1), reduction='none')
-        loss = loss.view(-1, target_ids.size(1)) * target_masks
+        loss = torch.gather(props, -1, target_ids.unsqueeze(-1)).squeeze()
+        loss = -torch.log(loss + 1e-8) * target_masks
+        # loss = F.cross_entropy(props.view(-1, props.size(-1)), target_ids.view(-1), reduction='none')
+        # loss = loss.view(-1, target_ids.size(1)) * target_masks
         loss = loss.sum() / loss.size(0)
+
+        seqs = self.get_batch_seqs(props, self.tokenizer.get_vocab(), idx2oov)
         pred_num, gold_num, correct_num = self.get_f1_stats(seqs, targets)
         recall, precision, f1_score = self.get_f1_score(pred_num, gold_num, correct_num)
 
@@ -278,6 +282,7 @@ class Seq2SeqKPEModule(LightningModule):
         correct_num = 0
         for pred, target in zip(preds, targets):
             pred = ''.join(pred).split('|')
+            target = ''.join(target).split('|')
             pred_num += len(pred)
             gold_num += len(target)
             correct_num += len((set(pred).intersection(set(target))))
