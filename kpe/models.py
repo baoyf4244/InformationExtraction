@@ -85,7 +85,7 @@ class Coverage(nn.Module):
         coverage_scores = torch.masked_fill(coverage_scores, encoder_masks, float('-inf'))
         coverage_scores = F.softmax(coverage_scores, -1)
         coverage_outputs = torch.bmm(coverage_scores.unsqueeze(1), encoder_outputs)  # [bs, 1, ehs]
-        return coverage_outputs.squeeze(), coverage_scores
+        return coverage_outputs.squeeze(1), coverage_scores
 
 
 class Decoder(nn.Module):
@@ -174,8 +174,8 @@ class Seq2SeqKPEModule(LightningModule):
     def forward(self, input_ids, input_masks, input_vocab_ids, oov_ids, target_ids):
         inputs = self.embedding(input_ids)
         encoder_outputs, encoder_hidden = self.encoder(inputs)
-        decoder_hidden = (torch.cat(torch.chunk(encoder_hidden[0], 2, 0), -1).squeeze(),
-                          torch.cat(torch.chunk(encoder_hidden[1], 2, 0), -1).squeeze())
+        decoder_hidden = (torch.cat(torch.chunk(encoder_hidden[0], 2, 0), -1).squeeze(0),
+                          torch.cat(torch.chunk(encoder_hidden[1], 2, 0), -1).squeeze(0))
 
         if self.coverage:
             coverage_memery = self.coverage_memery.repeat(input_ids.size())

@@ -224,7 +224,7 @@ class NERDataModule(LightningDataModule):
                  max_len: int = 200,
                  batch_size: int = 16,
                  model_name: str = 'BiLSTM-LAN',
-                 taf_file: str = 'data/idx2tag_question.json',
+                 tag_file: str = 'data/idx2tag_question.json',
                  pretrained_model_name: str = 'bert-base-chinese'):
         """
 
@@ -238,7 +238,7 @@ class NERDataModule(LightningDataModule):
         self.max_len = max_len
         self.batch_size = batch_size
         self.dataset_class = get_dataset(model_name)
-        self.tag_file = taf_file
+        self.tag_file = tag_file
         self.tokenizer = BertTokenizer.from_pretrained(pretrained_model_name)
         self.train_dataset = None
         self.val_dataset = None
@@ -252,12 +252,11 @@ class NERDataModule(LightningDataModule):
         val_file = os.path.join(self.data_dir, 'dev.txt')
         test_file = os.path.join(self.data_dir, 'test.txt')
         predict_file = os.path.join(self.data_dir, 'predict.txt')
-        tag_file = os.path.join(self.data_dir, self.tag_file)
 
         if stage == 'fit' or stage is None:
-            self.train_dataset = self.dataset_class(train_file, tag_file, self.tokenizer)
+            self.train_dataset = self.dataset_class(train_file, self.tag_file, self.tokenizer)
             if os.path.isfile(val_file):
-                self.val_dataset = self.dataset_class(val_file, tag_file, self.tokenizer)
+                self.val_dataset = self.dataset_class(val_file, self.tag_file, self.tokenizer)
             else:
                 data_size = len(self.train_dataset)
                 train_size = int(data_size * 0.8)
@@ -266,10 +265,10 @@ class NERDataModule(LightningDataModule):
 
         if stage == 'test' or stage is None:
             if os.path.isfile(test_file):
-                self.test_dataset = self.dataset_class(test_file, tag_file, self.tokenizer)
+                self.test_dataset = self.dataset_class(test_file, self.tag_file, self.tokenizer)
 
         if stage == 'predict' or stage is None:
-            self.predict_dataset = self.dataset_class(predict_file, tag_file, self.tokenizer, True)
+            self.predict_dataset = self.dataset_class(predict_file, self.tag_file, self.tokenizer, True)
 
     def train_dataloader(self) -> TRAIN_DATALOADERS:
         return DataLoader(self.train_dataset, self.batch_size, collate_fn=self.dataset_class.collocate_fn)

@@ -81,6 +81,6 @@ data:
   max_len: 200
   batch_size: 4
   model_name: mrc
-  taf_file: idx2tag_question.json
+  tag_file: data/idx2tag_question.json
   pretrained_model_name: bert-base-chinese
 ckpt_path: null

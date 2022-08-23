@@ -83,7 +83,7 @@ data:
   max_len: 200
   batch_size: 16
   model_name: BiLSTM-CRF
-  taf_file: idx2tag.json
+  tag_file: data/idx2tag.json
   pretrained_model_name: bert-base-chinese
 ckpt_path: null
 optimizer:

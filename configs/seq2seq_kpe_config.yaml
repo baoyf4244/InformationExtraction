@@ -101,7 +101,7 @@ data:
   batch_size: 16
   vocab_file: data/kpe/vocab.txt
   min_freq: 5
-ckpt_path: models\kpe\seq2seq-epoch=05-val_f1_score=0.0001.ckpt
+ckpt_path: null
 optimizer:
   class_path: torch.optim.Adam
   init_args:
