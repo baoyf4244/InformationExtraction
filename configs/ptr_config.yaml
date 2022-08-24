@@ -73,6 +73,7 @@ data:
   batch_size: 16
   relation_file: data/nre/relations.txt
   vocab_file: data/nre/vocab.txt
+  model: ptr
 ckpt_path: null
 optimizer:
   class_path: torch.optim.Adam

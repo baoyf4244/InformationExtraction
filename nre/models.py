@@ -3,15 +3,14 @@ import torch.nn as nn
 import torch.nn.functional as F
 from pytorch_lightning import LightningModule
 from layers import Encoder, Decoder, BahdanauAttention
-from tokenization import EnglishLabelTokenizer
-from tokenization_ptr import PTRTokenizer
+from tokenization_ptr import PTRTokenizer, WDTokenizer
 
 
 class Seq2SeqNREModule(LightningModule):
-    def __init__(self, vocab_file, embedding_size, hidden_size, num_layers, decoder_max_steps):
+    def __init__(self, vocab_file, label_file, embedding_size, hidden_size, num_layers, decoder_max_steps):
         super(Seq2SeqNREModule, self).__init__()
         self.decoder_max_steps = decoder_max_steps
-        self.tokenizer = EnglishLabelTokenizer(vocab_file)
+        self.tokenizer = WDTokenizer(vocab_file=vocab_file, label_file=label_file)
         self.embedding = nn.Embedding(self.tokenizer.get_vocab_size(), embedding_size)
         self.encoder = Encoder(embedding_size, hidden_size, num_layers)
         self.decoder = Decoder(embedding_size, hidden_size, self.tokenizer.get_vocab_size())
@@ -51,6 +50,9 @@ class Seq2SeqNREModule(LightningModule):
     def get_results(self, pred_ids, att_scores, tokens):
         preds = []
         for i, pred_id in enumerate(pred_ids):
+            if pred_id.item() == self.tokenizer.get_end_id():
+                break
+
             if pred_id.item() == self.tokenizer.get_unk_id():
                 if att_scores[i] < len(tokens):
                     pred = tokens[att_scores[i]]
@@ -58,9 +60,6 @@ class Seq2SeqNREModule(LightningModule):
                     pred = self.tokenizer.get_pad_token()
             else:
                 pred = self.tokenizer.convert_id_to_token(pred_id)
-
-            if pred_id.item() == self.tokenizer.get_end_id():
-                break
 
             preds.append(pred)
         return preds
@@ -71,7 +70,8 @@ class Seq2SeqNREModule(LightningModule):
             preds.append(self.get_results(pred_id, att_score, token))
         return preds
 
-    def get_f1_stats(self, preds, targets):
+    @staticmethod
+    def get_f1_stats(preds, targets):
         pred_num = 0
         gold_num = 0
         correct_num = 0
@@ -85,13 +85,14 @@ class Seq2SeqNREModule(LightningModule):
 
         return pred_num, gold_num, correct_num
 
-    def get_f1_score(self, pred_num, gold_num, correct_num):
+    @staticmethod
+    def get_f1_score(pred_num, gold_num, correct_num):
         recall = correct_num / (1e-8 + gold_num)
         precision = correct_num / (1e-8 + pred_num)
         f1_score = 2 * recall * precision / (recall + precision + 1e-8)
         return recall, precision, f1_score
 
-    def training_step(self, batch):
+    def compute_step_stats(self, batch, stage):
         tokens, targets, input_ids, input_masks, input_vocab_masks, target_ids = batch
         outputs, att_scores = self(input_ids, input_masks, input_vocab_masks, target_ids)
         pred_ids = outputs.argmax(-1)
@@ -102,13 +103,53 @@ class Seq2SeqNREModule(LightningModule):
         recall, precision, f1_score = self.get_f1_score(pred_num, gold_num, correct_num)
 
         logs = {
-            'loss': loss,
-            'recall': recall,
-            'precision': precision,
-            'f1_score': f1_score
+            stage + '_loss': loss,
+            stage + '_gold_num': gold_num,
+            stage + '_pred_num': pred_num,
+            stage + '_correct_num': correct_num,
+            stage + '_recall': recall,
+            stage + '_precision': precision,
+            stage + '_f1_score': f1_score
         }
-        self.log_dict(logs, prog_bar=True, on_epoch=True)
+        if stage == 'train':
+            logs['loss'] = logs['train_loss']
+
+        self.log_dict(logs, prog_bar=True)
         return logs
+
+    def compute_epoch_states(self, outputs, stage='val'):
+        pred_num = torch.Tensor([output[stage + '_pred_num'] for output in outputs]).sum()
+        gold_num = torch.Tensor([output[stage + '_gold_num'] for output in outputs]).sum()
+        correct_num = torch.Tensor([output[stage + '_correct_num'] for output in outputs]).sum()
+        loss = torch.stack([output[stage + '_loss'] for output in outputs]).mean()
+
+        recall, precision, f1 = self.get_f1_score(pred_num, gold_num, correct_num)
+
+        logs = {
+            stage + '_pred_num': pred_num,
+            stage + '_gold_num': gold_num,
+            stage + '_correct_num': correct_num,
+            stage + '_loss': loss,
+            stage + '_f1_score': f1,
+            stage + '_recall': recall,
+            stage + '_precision': precision
+        }
+
+        self.log_dict(logs)
+
+    def training_step(self, batch):
+        logs = self.compute_step_stats(batch, 'train')
+        return logs
+
+    def training_epoch_end(self, outputs):
+        self.compute_epoch_states(outputs, 'train')
+
+    def validation_step(self, batch, batch_idx):
+        logs = self.compute_step_stats(batch, 'val')
+        return logs
+
+    def validation_epoch_end(self, outputs):
+        self.compute_epoch_states(outputs, 'val')
 
 
 class PTRDecoder(nn.Module):
@@ -223,7 +264,8 @@ class Seq2SeqPTRNREModule(LightningModule):
 
         return head_start_logits, head_end_logits, tail_start_logits, tail_end_logits, relation_logits
 
-    def get_result(self, head_start_offsets, head_end_offsets, tail_start_offsets, tail_end_offsets, relation_ids):
+    @staticmethod
+    def get_result(head_start_offsets, head_end_offsets, tail_start_offsets, tail_end_offsets, relation_ids):
         triples = set()
         for i in range(len(head_start_offsets)):
             if relation_ids[i] == 0:
