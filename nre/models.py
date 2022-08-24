@@ -4,6 +4,7 @@ import torch.nn.functional as F
 from pytorch_lightning import LightningModule
 from layers import Encoder, Decoder, BahdanauAttention
 from tokenization import EnglishLabelTokenizer
+from tokenization_ptr import PTRTokenizer
 
 
 class Seq2SeqNREModule(LightningModule):
@@ -138,8 +139,7 @@ class PTRDecoder(nn.Module):
         att_output, att_scores = self.attention(decoder_input, encoder_outputs, encoder_masks)
         decoder_output, hidden = self.lstm(torch.cat([decoder_input, att_output], -1), decoder_hidden)
 
-        head_inputs = torch.cat([encoder_outputs, decoder_output.unsqueeze(1).repeat(1, encoder_outputs.size(1), 1)],
-                                -1)
+        head_inputs = torch.cat([encoder_outputs, decoder_output.unsqueeze(1).repeat(1, encoder_outputs.size(1), 1)], -1)
         head_outputs, _ = self.head_lstm(head_inputs)  # [bs, ts, 2 * hs]
         head_start_logits = self.head_start_cls(head_outputs).squeeze()  # [bs, ts]
         head_start_logits = torch.masked_fill(head_start_logits, encoder_masks, float('-inf'))
@@ -166,13 +166,18 @@ class PTRDecoder(nn.Module):
 
 
 class Seq2SeqPTRNREModule(LightningModule):
-    def __init__(self, vocab_size, label_size, embedding_size, hidden_size, num_layers, max_decoder_step):
+    def __init__(self, vocab_file, label_file, embedding_size, hidden_size, num_layers, max_decoder_step):
         super(Seq2SeqPTRNREModule, self).__init__()
         self.max_decode_step = max_decoder_step
-        self.embedding = nn.Embedding(vocab_size, embedding_size)
-        self.label_embedding = nn.Embedding(label_size, embedding_size)
+        self.tokenizer = PTRTokenizer(vocab_file)
+        with open(label_file, encoding='utf-8') as f:
+            relations = f.readlines()
+        self.relations = [rel.strip() for rel in relations if rel.strip()]
+
+        self.embedding = nn.Embedding(self.tokenizer.get_vocab_size(), embedding_size)
+        self.label_embedding = nn.Embedding(len(self.relations), embedding_size)
         self.encoder = Encoder(embedding_size, hidden_size, num_layers)
-        self.decoder = PTRDecoder(hidden_size, hidden_size, num_layers, label_size)
+        self.decoder = PTRDecoder(hidden_size, hidden_size, num_layers, len(self.relations))
         self.linear = nn.Linear(8 * hidden_size + embedding_size, hidden_size)  # 用于 decoder input 降维
 
         self.register_buffer('h0', torch.zeros(1, hidden_size, dtype=torch.float))
@@ -218,10 +223,11 @@ class Seq2SeqPTRNREModule(LightningModule):
 
         return head_start_logits, head_end_logits, tail_start_logits, tail_end_logits, relation_logits
 
-    @staticmethod
-    def get_result(head_start_offsets, head_end_offsets, tail_start_offsets, tail_end_offsets, relation_ids):
+    def get_result(self, head_start_offsets, head_end_offsets, tail_start_offsets, tail_end_offsets, relation_ids):
         triples = set()
         for i in range(len(head_start_offsets)):
+            if relation_ids[i] == 0:
+                break
             triple = (head_start_offsets[i], head_end_offsets[i], tail_start_offsets[i],
                       tail_end_offsets[i], relation_ids[i])
 
@@ -238,7 +244,11 @@ class Seq2SeqPTRNREModule(LightningModule):
             relation_ids = relation_ids.argmax(-1)
 
         for i in range(len(head_start_ids)):
-            triples.append(self.get_result(head_start_ids[i], head_end_ids[i], tail_start_ids[i], tail_end_ids[i], relation_ids[i]))
+            triples.append(self.get_result(head_start_ids[i].detach().cpu().numpy().tolist(),
+                                           head_end_ids[i].detach().cpu().numpy().tolist(),
+                                           tail_start_ids[i].detach().cpu().numpy().tolist(),
+                                           tail_end_ids[i].detach().cpu().numpy().tolist(),
+                                           relation_ids[i].detach().cpu().numpy().tolist()))
 
         return triples
 
@@ -255,14 +265,14 @@ class Seq2SeqPTRNREModule(LightningModule):
                     correct_num += 1
         return pred_num, gold_num, correct_num
 
-    def get_f1_score(self, preds, targets):
-        pred_num, gold_num, correct_num = self.get_f1_stats(preds, targets)
+    @staticmethod
+    def get_f1_score(pred_num, gold_num, correct_num):
         recall = correct_num / (gold_num + 1e-8)
         precision = correct_num / (pred_num + 1e-8)
-        f1_score = 2 * recall + precision / (recall + precision + 1e-8)
+        f1_score = 2 * recall * precision / (recall + precision + 1e-8)
         return precision, recall, f1_score
 
-    def training_step(self, batch):
+    def compute_step_stats(self, batch, stage):
         input_ids, input_masks, head_start_ids, head_end_ids, tail_start_ids, tail_end_ids, target_ids, target_masks = batch
         head_start_logits, head_end_logits, tail_start_logits, tail_end_logits, relation_logits = self(input_ids, input_masks, target_ids, False)
         head_start_loss = F.cross_entropy(head_start_logits.view(-1, head_start_logits.size(-1)), head_start_ids.view(-1), reduction='sum', ignore_index=-1)
@@ -276,17 +286,57 @@ class Seq2SeqPTRNREModule(LightningModule):
         pred_triples = self.get_batch_results(head_start_logits, head_end_logits, tail_start_logits,
                                               tail_end_logits, relation_logits)
         target_triples = self.get_batch_results(head_start_ids, head_end_ids, tail_start_ids, tail_end_ids, target_ids)
-        precision, recall, f1_score = self.get_f1_score(pred_triples, target_triples)
+        pred_num, gold_num, correct_num = self.get_f1_stats(pred_triples, target_triples)
+        precision, recall, f1_score = self.get_f1_score(pred_num, gold_num, correct_num)
 
         logs = {
-            'loss': loss,
-            'recall': recall,
-            'precision': precision,
-            'f1_score': f1_score
+            stage + '_loss': loss,
+            stage + '_gold_num': gold_num,
+            stage + '_pred_num': pred_num,
+            stage + '_correct_num': correct_num,
+            stage + '_recall': recall,
+            stage + '_precision': precision,
+            stage + '_f1_score': f1_score
         }
-        self.log_dict(logs, prog_bar=True, on_epoch=True)
+        if stage == 'train':
+            logs['loss'] = logs['train_loss']
+
+        self.log_dict(logs, prog_bar=True)
         return logs
 
+    def compute_epoch_states(self, outputs, stage='val'):
+        pred_num = torch.Tensor([output[stage + '_pred_num'] for output in outputs]).sum()
+        gold_num = torch.Tensor([output[stage + '_gold_num'] for output in outputs]).sum()
+        correct_num = torch.Tensor([output[stage + '_correct_num'] for output in outputs]).sum()
+        loss = torch.stack([output[stage + '_loss'] for output in outputs]).mean()
+
+        recall, precision, f1 = self.get_f1_score(pred_num, gold_num, correct_num)
+
+        logs = {
+            stage + '_pred_num': pred_num,
+            stage + '_gold_num': gold_num,
+            stage + '_correct_num': correct_num,
+            stage + '_loss': loss,
+            stage + '_f1_score': f1,
+            stage + '_recall': recall,
+            stage + '_precision': precision
+        }
+
+        self.log_dict(logs)
+
+    def training_step(self, batch):
+        logs = self.compute_step_stats(batch, 'train')
+        return logs
+
+    def training_epoch_end(self, outputs):
+        self.compute_epoch_states(outputs, 'train')
+
+    def validation_step(self, batch, batch_idx):
+        logs = self.compute_step_stats(batch, 'val')
+        return logs
+
+    def validation_epoch_end(self, outputs):
+        self.compute_epoch_states(outputs, 'val')
 
 
 

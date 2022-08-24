@@ -1,6 +1,8 @@
+import json
 import os
 import torch
 from typing import Optional
+from tokenization_ptr import PTRTokenizer
 from torch.utils.data import Dataset, DataLoader, random_split
 from tokenization import ChineseCharTokenizer, EnglishLabelTokenizer
 from pytorch_lightning.utilities.types import TRAIN_DATALOADERS, EVAL_DATALOADERS
@@ -92,14 +94,11 @@ class NREDataSet(Dataset):
 
 
 class PTRNREDataSet(Dataset):
-    def __init__(self, sent_file, relations_file, tokenizer: EnglishLabelTokenizer,
-                 char_tokenizer: ChineseCharTokenizer = None, triples_file=None):
+    def __init__(self, data_file, relations_file, tokenizer: PTRTokenizer):
         super(PTRNREDataSet, self).__init__()
-        self.sent_file = sent_file
-        self.triples_file = triples_file
+        self.data_file = data_file
         self.relations_file = relations_file
         self.tokenizer = tokenizer
-        self.char_tokenizer = char_tokenizer
         self.relations = self.get_relations()
         self.relation2idx = {relation: idx for idx, relation in enumerate(self.relations)}
         self.datasets = self.make_dataset()
@@ -113,44 +112,35 @@ class PTRNREDataSet(Dataset):
 
     def make_dataset(self):
         datasets = []
-        with open(self.sent_file, encoding='utf-8') as f:
-            sentences = f.readlines()
+        with open(self.data_file, encoding='utf-8') as f:
+            for line in f:
+                line = json.loads(line)
+                data = {}
+                tokens = self.tokenizer.tokenize(line['text'])
+                token_ids = self.tokenizer.convert_tokens_to_ids(tokens)
+                data['tokens'] = tokens
+                data['token_ids'] = token_ids
+                data['masks'] = [0] * len(token_ids)
 
-        with open(self.triples_file, encoding='utf-8') as f:
-            triples = f.readlines()
+                targets = line['label']
 
-        for sentence, triple in zip(sentences, triples):
-            data = {}
-            tokens = self.tokenizer.tokenize(sentence)
-            token_ids = self.tokenizer.convert_tokens_to_ids(tokens)
-            data['tokens'] = tokens
-            data['token_ids'] = token_ids
-            data['masks'] = [0] * len(token_ids)
+                head_start_offsets, head_end_offsets, tail_start_offsets, tail_end_offsets, relation_ids = [], [], [], [], []
+                for target in targets:
+                    elements = target.strip().split()
+                    head_start_offsets.append(int(elements[0]))
+                    head_end_offsets.append(int(elements[1]))
+                    tail_start_offsets.append(int(elements[2]))
+                    tail_end_offsets.append(int(elements[3]))
+                    relation_ids.append(self.relation2idx[elements[4]])
 
-            targets = triple.split('|')
+                data['head_start_offsets'] = head_start_offsets + [-1]
+                data['head_end_offsets'] = head_end_offsets + [-1]
+                data['tail_start_offsets'] = tail_start_offsets + [-1]
+                data['tail_end_offsets'] = tail_end_offsets + [-1]
+                data['relation_ids'] = relation_ids + [self.relation2idx[self.tokenizer.get_end_token()]]
+                data['target_masks'] = [0] * len(relation_ids)
 
-            head_start_ids, head_end_ids, tail_start_ids, tail_end_ids, relation_ids = [], [], [], [], []
-            for target in targets:
-                elements = target.strip().split()
-                head_start_ids.append(int(elements[0]))
-                head_end_ids.append(int(elements[1]))
-                tail_start_ids.append(int(elements[2]))
-                tail_end_ids.append(int(elements[3]))
-                relation_ids.append(self.relation2idx[elements[4]])
-
-            data['head_start_ids'] = head_start_ids + [-1]
-            data['head_end_ids'] = head_end_ids + [-1]
-            data['tail_start_ids'] = tail_start_ids + [-1]
-            data['tail_end_ids'] = tail_end_ids + [-1]
-            data['relation_ids'] = relation_ids + [self.relation2idx['<SOS>']]
-            data['target_masks'] = [0] * len(relation_ids)
-
-            if self.char_tokenizer:
-                chars = self.char_tokenizer.tokenize(sentence)
-                char_ids = self.char_tokenizer.convert_tokens_to_ids(chars)
-                data['char_ids'] = char_ids
-
-            datasets.append(data)
+                datasets.append(data)
         return datasets
 
     def __getitem__(self, index):
@@ -166,17 +156,15 @@ class PTRNREDataSet(Dataset):
         masks = [data['masks'] + [1] * (src_max_seq_len - len(data['masks'])) for data in batch]
 
         tgt_max_seq_len = max(len(data['relation_ids']) for data in batch)
-        head_start_ids = [data['head_start_ids'] + [0] * (tgt_max_seq_len - len(data['head_start_ids'])) for data in batch]
-        head_end_ids = [data['head_end_ids'] + [0] * (tgt_max_seq_len - len(data['head_end_ids'])) for data in batch]
-        tail_start_ids = [data['tail_start_ids'] + [0] * (tgt_max_seq_len - len(data['tail_start_ids'])) for data in batch]
-        tail_end_ids = [data['tail_end_ids'] + [0] * (tgt_max_seq_len - len(data['tail_end_ids'])) for data in batch]
+        head_start_offsets = [data['head_start_offsets'] + [0] * (tgt_max_seq_len - len(data['head_start_offsets'])) for data in batch]
+        head_end_offsets = [data['head_end_offsets'] + [0] * (tgt_max_seq_len - len(data['head_end_offsets'])) for data in batch]
+        tail_start_offsets = [data['tail_start_offsets'] + [0] * (tgt_max_seq_len - len(data['tail_start_offsets'])) for data in batch]
+        tail_end_offsets = [data['tail_end_offsets'] + [0] * (tgt_max_seq_len - len(data['tail_end_offsets'])) for data in batch]
         target_ids = [data['relation_ids'] + [0] * (tgt_max_seq_len - len(data['relation_ids'])) for data in batch]
         target_masks = [data['target_masks'] + [1] * (tgt_max_seq_len - len(data['target_masks'])) for data in batch]
-        # tokens = [data['tokens'] for data in batch]
-        # targets = [data['targets'] for data in batch]
 
-        return torch.LongTensor(token_ids), torch.LongTensor(masks), torch.LongTensor(head_start_ids), \
-               torch.LongTensor(head_end_ids), torch.LongTensor(tail_start_ids), torch.LongTensor(tail_end_ids), \
+        return torch.LongTensor(token_ids), torch.LongTensor(masks), torch.LongTensor(head_start_offsets), \
+               torch.LongTensor(head_end_offsets), torch.LongTensor(tail_start_offsets), torch.LongTensor(tail_end_offsets), \
                torch.LongTensor(target_ids), torch.LongTensor(target_masks)
 
 
@@ -201,7 +189,7 @@ class NREDataModule(LightningDataModule):
         self.max_len = max_len
         self.batch_size = batch_size
         self.relation_file = relation_file
-        self.tokenizer = EnglishLabelTokenizer(vocab_file)
+        self.tokenizer = PTRTokenizer(vocab_file)
         self.train_dataset = None
         self.val_dataset = None
         self.test_dataset = None
@@ -211,15 +199,13 @@ class NREDataModule(LightningDataModule):
 
     def setup(self, stage: Optional[str] = None) -> None:
         if stage == 'fit' or stage is None:
-            self.train_dataset = PTRNREDataSet(os.path.join(self.data_dir, 'train.sent'),
-                                            os.path.join(self.data_dir, 'relations.txt'),
-                                            self.tokenizer,
-                                            triples_file=os.path.join(self.data_dir, 'train.pointer'))
-            if os.path.isfile(os.path.join(self.data_dir, 'dev.sent')):
-                self.val_dataset = PTRNREDataSet(os.path.join(self.data_dir, 'dev.sent'),
-                                              os.path.join(self.data_dir, 'relations.txt'),
-                                              self.tokenizer,
-                                              triples_file=os.path.join(self.data_dir, 'dev.pointer'))
+            self.train_dataset = PTRNREDataSet(os.path.join(self.data_dir, 'train.txt'),
+                                               self.relation_file,
+                                               self.tokenizer)
+            if os.path.isfile(os.path.join(self.data_dir, 'dev.txt')):
+                self.val_dataset = PTRNREDataSet(os.path.join(self.data_dir, 'dev.txt'),
+                                                 self.relation_file,
+                                                 self.tokenizer)
             else:
                 data_size = len(self.train_dataset)
                 train_size = int(data_size * 0.8)
@@ -227,10 +213,8 @@ class NREDataModule(LightningDataModule):
                 self.train_dataset, self.val_dataset = random_split(self.train_dataset, [train_size, val_size])
 
         if stage == 'test' or stage is None:
-            self.val_dataset = PTRNREDataSet(os.path.join(self.data_dir, 'test.sent'),
-                                          os.path.join(self.data_dir, 'relations.txt'),
-                                          self.tokenizer,
-                                          triples_file=os.path.join(self.data_dir, 'test.pointer'))
+            self.val_dataset = PTRNREDataSet(os.path.join(self.data_dir, 'test.txt'),
+                                             self.relation_file, self.tokenizer)
 
         # if stage == 'predict' or stage is None:
         #     self.predict_dataset = self.dataset_class(predict_file, tag_file, self.tokenizer, True)
@@ -250,10 +234,9 @@ class NREDataModule(LightningDataModule):
 
 if __name__ == '__main__':
     vocab_file = 'C:/Users/ML-YX01/code/InformationExtraction/data/nre/vocab.txt'
-    data_file = 'C:/Users/ML-YX01/code/InformationExtraction/data/nre/dev.sent'
+    data_file = 'C:/Users/ML-YX01/code/InformationExtraction/data/nre/train.txt'
     relations = 'C:/Users/ML-YX01/code/InformationExtraction/data/nre/relations.txt'
-    triples_file = 'C:/Users/ML-YX01/code/InformationExtraction/data/nre/dev.tup'
-    tokenizer = EnglishLabelTokenizer(vocab_file, data_file, relations)
-    dataset = NREDataSet(data_file, relations, tokenizer, triples_file=triples_file)
+    tokenizer = PTRTokenizer(vocab_file, data_file, relations)
+    dataset = PTRNREDataSet(data_file, relations, tokenizer)
     print(dataset[0])
-    print(NREDataSet.collocate_fn(dataset[: 10]))
+    print(PTRNREDataSet.collocate_fn(dataset[: 10]))

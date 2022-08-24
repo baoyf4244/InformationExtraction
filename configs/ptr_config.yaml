@@ -61,8 +61,8 @@ trainer:
   stochastic_weight_avg: false
   terminate_on_nan: null
 model:
-  vocab_size: 11951
-  label_size: 31
+  vocab_file: data/nre/vocab.txt
+  label_file: data/nre/relations.txt
   embedding_size: 128
   hidden_size: 256
   num_layers: 1
