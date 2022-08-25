@@ -1,0 +1,9 @@
+model:
+  class_path: ner.models.Seq2SeqPTRNREModule
+  init_args:
+    vocab_file: data/nre/vocab.txt
+    label_file: data/nre/relations.txt
+    embedding_size: 128
+    hidden_size: 256
+    num_layers: 1
+    max_decoder_step: 5

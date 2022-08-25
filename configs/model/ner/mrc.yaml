@@ -1,0 +1,6 @@
+model:
+  class_path: ner.models.MRCNERModule
+  init_args:
+    pretrained_model_name: bert-base-chinese
+    warmup_steps: 1000
+    num_total_steps: 270000

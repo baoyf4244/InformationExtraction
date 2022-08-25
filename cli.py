@@ -27,6 +27,6 @@ class MyLightningCli(LightningCLI):
 
 if __name__ == '__main__':
     parser = LightningArgumentParser()
-    parser.add_argument('--model_name', default='bilstm-lan', type=str)
+    parser.add_argument('--model_name', default='bilstm-lan.yaml', type=str)
 
     cli = MyLightningCli(BiLSTMLanNERModule, NERDataModule)

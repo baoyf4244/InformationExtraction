@@ -1,0 +1,9 @@
+data:
+  class_path: nre.datasets.NREDataModule
+  init_args:
+    data_dir: data/nre
+    max_len: 200
+    batch_size: 16
+    relation_file: data/nre/relations.txt
+    vocab_file: data/nre/vocab.txt
+    model: ptr

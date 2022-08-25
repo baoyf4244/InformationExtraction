@@ -1,0 +1,8 @@
+model:
+  class_path: ner.models.BiLSTMCrfNERModule
+  init_args:
+    embedding_size: 128
+    hidden_size: 128
+    vocab_size: 21128
+    num_layers: 2
+    tag_file: data/ner/idx2tag.json
