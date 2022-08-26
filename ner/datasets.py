@@ -3,291 +3,170 @@ import json
 import torch
 from typing import Optional
 from collections import defaultdict
-
+from module import IEDataSet, IEDataModule, Vocab, SpecialTokens
 from pytorch_lightning.utilities.types import TRAIN_DATALOADERS, EVAL_DATALOADERS
-from transformers import BertTokenizer
-from pytorch_lightning import LightningDataModule
 from torch.utils.data import Dataset, DataLoader, random_split
+from transformers import BertTokenizer, AutoTokenizer
 
 
-def get_dataset(model_name):
-    dataset = {
-        'MRC': MRCNERDataset,
-        'BILSTM-LAN': FlatNERDataSet,
-        'BILSTM-CRF': FlatNERDataSet
-    }
-    model_name = model_name.upper()
-    if model_name in dataset:
-        return dataset[model_name]
-    else:
-        raise NotImplementedError
-
-
-class NERDataSet(Dataset):
-    def __init__(self, data_file, tag_file, tokenizer: BertTokenizer, max_len=200, predict=False):
-        super(NERDataSet, self).__init__()
-        self.data_file = data_file
-        self.tag_file = tag_file
-        self.tokenizer = tokenizer
-        self.max_len = max_len
-        self.predict = predict
-
-    def make_dataset(self):
-        raise NotImplementedError
-
-    def __len__(self):
-        return len(self.dataset)
-
-    def __getitem__(self, item):
-        """
-        Args:
-            item: int, idx
-        Returns:
-            a dict
-        """
-        return self.dataset[item]
-
+class LabelVocab(Vocab):
     @staticmethod
-    def collocate_fn(batch):
-        raise NotImplementedError
+    def get_non_entity_token():
+        return SpecialTokens.NON_ENTITY.value
+
+    def get_non_entity_token_id(self):
+        return self.word2idx[SpecialTokens.NON_ENTITY.value]
+
+    def convert_token_to_id(self, token):
+        return self.word2idx[token]
 
 
-class MRCNERDataset(NERDataSet):
-    """
-    MRC NER Dataset
-    Args:
-        data_file: path to mrc-ner style json
-        tokenizer: BertTokenizer
-    """
+class FlatNERDataSet(IEDataSet):
+    def __init__(self, vocab, label_vocab: LabelVocab, *args, **kwargs):
+        super(FlatNERDataSet, self).__init__(*args, **kwargs)
+        self.vocab = vocab
+        self.label_vocab = label_vocab
 
-    def __init__(self, data_file, tag_file, tokenizer: BertTokenizer, max_len=200, predict=False):
-        super(MRCNERDataset, self).__init__(data_file, tag_file, tokenizer, max_len, predict)
-        self.tag2query = self.get_tag2query()
-        self.dataset = self.make_dataset()
+    def get_label_ids(self, labels, seq_len):
+        label_ids = [self.label_vocab.get_non_entity_token_id()] * seq_len
+        for label, indices in labels.items():
+            for start, end in indices:
+                if start >= seq_len:
+                    continue
+                label_ids[start] = self.label_vocab.convert_token_to_id('B-' + label)
 
-    def get_tag2query(self):
-        with open(self.tag_file, encoding='utf-8') as f:
-            tags = json.load(f)
+                for i in range(start + 1, end + 1):
+                    label_ids[i] = self.label_vocab.convert_token_to_id('I-' + label)
 
-        tag2query = {}
-        for tag in tags.values():
-            query_tokens = ['[CLS]'] + self.tokenizer.tokenize(tag['query']) + ['[SEP]']
-            query_ids = self.tokenizer.convert_tokens_to_ids(query_tokens)
-            tag2query[tag['tag'].lower()] = query_ids
-        return tag2query
+        return label_ids
 
-    def make_dataset(self):
+    def get_data(self, line):
+        data = {
+            'id': line['id'],
+            'tokens': line['text'].split()
+        }
+
+        data['masks'] = [1] * len(data['tokens'])
+        data['input_ids'] = self.vocab.convert_tokens_to_ids(data['tokens'])
+        data['target_ids'] = self.get_label_ids(line['labels'], len(data['tokens']))
+        return data
+
+
+class FlatNERDataModule(IEDataModule):
+    def __init__(self, vocab_file, label_file, *args, **kwargs):
+        super(FlatNERDataModule, self).__init__(*args, **kwargs)
+        self.vocab = Vocab(vocab_file)
+        self.label_vocab = LabelVocab(label_file)
+
+    def get_dataset(self, data_file, is_predict=False):
+        dataset = FlatNERDataSet(data_file, vocab=self.vocab, label_vocab=self.label_vocab,
+                                 max_len=self.max_len, is_predict=is_predict)
+        dataset.make_dataset()
+        return dataset
+
+    def collocate_fn(self, batch):
+        ids = self.get_data_by_name(batch, 'id')
+        tokens = [self.get_data_by_name(batch, 'tokens')]
+        masks = self.pad_batch(self.get_data_by_name(batch, 'masks'), 0)
+        input_ids = self.pad_batch(self.get_data_by_name(batch, 'input_ids'), self.vocab.get_pad_id())
+        target_ids = self.pad_batch(self.get_data_by_name(batch, 'target_ids'), self.label_vocab.get_pad_id())
+
+        return ids, tokens, masks, input_ids, target_ids
+
+
+class MRCNERDataSet(IEDataSet):
+    def __init__(self, tokenizer: BertTokenizer, label_vocab, question_vocab, *args, **kwargs):
+        super(MRCNERDataSet, self).__init__(*args, **kwargs)
+        self.tokenizer = tokenizer
+        self.label_vocab = label_vocab
+        self.question_vocab = question_vocab
+        self.label_question_mapping = self.get_label_question_mapping()
+
+    def get_label_question_mapping(self):
+        label_question_mapping = dict(zip(self.label_vocab.get_vocab(), self.question_vocab.get_vocab()))
+        return {key: self.tokenizer.tokenize(value) for key, value in label_question_mapping.items()}
+
+    def get_data(self, line):
         dataset = []
-        with open(self.data_file, encoding='utf-8') as f:
-            for i, line in enumerate(f):
-                segments = line.strip().split()
-                context_tokens = []
-                offsets = defaultdict(list)
-                start_tags = []
-                end_tags = []
-                for segment in segments:
-                    if self.predict:
-                        word = segment
-                        tag = 'o'
+        tokens = self.tokenizer.tokenize(line['text'])
+        for label, question in self.label_question_mapping.items():
+            token_type_ids = [0] * (len(question) + 2) + [1] * len(tokens)
+            tokens = question + ['[SEP]'] + tokens
+            tokens = ['[CLS]'] + tokens[self.max_len - 3] + ['[SEP]']
+            start_labels = [0] * len(tokens)
+            end_labels = [0] * len(tokens)
+            span_labels = [[0 for _ in range(len(tokens))] for _ in range(len(tokens))]
+
+            indices = line['labels'].get(label, [])
+            for start, end in indices:
+                start = start + len(question) + 2
+                end = end + len(question) + 2
+                if start < len(tokens) - 1:
+                    start_labels[start] = 1
+
+                    if end < len(tokens) - 1:
+                        end_labels[end] = 1
+                        span_labels[start][end] = 1
                     else:
-                        word, tag = segment.split('/')
-                    sub_tokens = self.tokenizer.tokenize(word)
-                    context_tokens.extend(sub_tokens)
-                    if tag in self.tag2query:
-                        offsets[tag].append((len(start_tags), len(start_tags) + len(sub_tokens) - 1))
-                        start_tags.extend([tag] + ['o'] * (len(sub_tokens) - 1))
-                        end_tags.extend(['o'] * (len(sub_tokens) - 1) + [tag])
-                    else:
-                        start_tags.extend(['o'] * len(sub_tokens))
-                        end_tags.extend(['o'] * len(sub_tokens))
+                        end_labels[len(tokens) - 2] = 1
+                        span_labels[start][len(tokens) - 2] = 1
+            data = {
+                'id': line['id'],
+                'masks': [1] * len(tokens),
+                'tokens': tokens,
+                'input_ids': self.tokenizer.convert_tokens_to_ids(tokens),
+                'token_type_ids': token_type_ids[: len(tokens)],
+                'start_labels': start_labels,
+                'end_labels': end_labels,
+                'span_labels': span_labels
+            }
+            dataset.append(data)
+        return dataset
 
-                for tag, query in self.tag2query.items():
-                    context_token_ids = self.tokenizer.convert_tokens_to_ids(context_tokens)
-                    context_token_ids = context_token_ids[: self.max_len - len(query) - 1]
-                    context_token_ids.append(self.tokenizer.convert_tokens_to_ids('[SEP]'))
-                    token_ids = query + context_token_ids
-                    token_type_ids = [0] * len(query) + [1] * len(context_token_ids)
-                    attention_masks = [1] * len(token_ids)
 
-                    start_labels = [0] * len(query) + [1 if context_tag == tag else 0 for context_tag in start_tags]
-                    end_labels = [0] * len(query) + [1 if context_tag == tag else 0 for context_tag in end_tags]
-                    start_labels = start_labels[: self.max_len - 1] + [0]
-                    end_labels = end_labels[: self.max_len - 1] + [0]
+class MRCNERDataModule(IEDataModule):
+    def __init__(self, pretrained_model_name, label_file, question_file, *args, **kwargs):
+        super(MRCNERDataModule, self).__init__(*args, **kwargs)
+        self.tokenizer = AutoTokenizer.from_pretrained(pretrained_model_name)
+        self.label_vocab = LabelVocab(label_file)
+        self.question_vocab = LabelVocab(question_file)
 
-                    assert len(start_labels) == len(end_labels) == len(token_ids) == len(attention_masks) == len(
-                        token_type_ids)
-
-                    span_labels = torch.zeros([len(start_labels), len(start_labels)], dtype=torch.int64)
-                    for start, end in offsets[tag]:
-                        start += len(query)
-                        end += len(query)
-                        if start >= len(start_labels) - 1 or end >= len(start_labels) - 1:
-                            continue
-
-                        assert start_labels[start] == 1
-                        assert end_labels[end] == 1
-
-                        span_labels[start, end] = 1
-
-                    data = {
-                        'input_ids': token_ids,
-                        'attention_mask': attention_masks,
-                        'token_type_ids': token_type_ids,
-                        'start_labels': start_labels,
-                        'end_labels': end_labels,
-                        'span_labels': span_labels
-                    }
-                    dataset.append(data)
-
+    def get_dataset(self, data_file, is_predict=False):
+        dataset = MRCNERDataSet(self.tokenizer, self.label_vocab, self.question_vocab, data_file=data_file,
+                                max_len=self.max_len, is_predict=is_predict)
+        dataset.make_dataset()
         return dataset
 
     @staticmethod
-    def collocate_fn(batch):
-        max_seq_len = max([len(data['input_ids']) for data in batch])
-        input_ids = [data['input_ids'] + [0] * (max_seq_len - len(data['input_ids'])) for data in batch]
-        attention_mask = [data['attention_mask'] + [0] * (max_seq_len - len(data['attention_mask'])) for data in batch]
-        token_type_ids = [data['token_type_ids'] + [0] * (max_seq_len - len(data['token_type_ids'])) for data in batch]
-        start_labels = [data['start_labels'] + [0] * (max_seq_len - len(data['start_labels'])) for data in batch]
-        end_labels = [data['end_labels'] + [0] * (max_seq_len - len(data['end_labels'])) for data in batch]
-        span_labels = torch.zeros(len(batch), max_seq_len, max_seq_len, dtype=torch.int64)
-        for i, data in enumerate(batch):
-            length, width = data['span_labels'].size()
-            span_labels[i, :length, :width] = data['span_labels']
+    def pad_batch_2d(batch, pad_token):
+        max_len = max(len(b) for b in batch)
+        max_len_2d = max(len(b[0]) for b in batch)
+        padded_batch = torch.LongTensor([[pad_token for _ in  range(max_len_2d)] for _ in range(max_len)])
+        for i in range(max_len):
+            padded_batch[i, :len(batch[i])] = batch[i]
+        return padded_batch
 
-        # return {
-        #     'input_ids': torch.LongTensor(input_ids),
-        #     'attention_mask': torch.LongTensor(attention_mask),
-        #     'token_type_ids': torch.LongTensor(token_type_ids),
-        #     'start_labels': torch.LongTensor(start_labels),
-        #     'end_labels': torch.LongTensor(end_labels),
-        #     'span_labels': span_labels
-        # }
+    def collocate_fn(self, batch):
+        ids = self.get_data_by_name(batch, 'id')
+        tokens = [self.get_data_by_name(batch, 'tokens')]
+        masks = self.pad_batch(self.get_data_by_name(batch, 'masks'), 0)
+        input_ids = self.pad_batch(self.get_data_by_name(batch, 'input_ids'), 0)
+        token_type_ids = self.pad_batch(self.get_data_by_name(batch, 'token_type_ids'), 0)
+        start_labels = self.pad_batch(self.get_data_by_name(batch, 'start_labels'), 0)
+        end_labels = self.pad_batch(self.get_data_by_name(batch, 'end_labels'), 0)
+        span_labels = self.pad_batch_2d(self.get_data_by_name(batch, 'span_labels'), 0)
 
-        return torch.LongTensor(input_ids), torch.LongTensor(attention_mask), torch.LongTensor(token_type_ids), \
-               torch.LongTensor(start_labels), torch.LongTensor(end_labels), span_labels
-
-
-class FlatNERDataSet(NERDataSet):
-    def __init__(self, data_file, tag_file, tokenizer: BertTokenizer, max_len=200, predict=False):
-        super(FlatNERDataSet, self).__init__(data_file, tag_file, tokenizer, max_len, predict)
-        with open(self.tag_file, encoding='utf-8') as f:
-            self.idx2tag = json.load(f)
-            self.idx2tag = {int(key): value for key, value in self.idx2tag.items()}
-        self.tag2idx = {value: key for key, value in self.idx2tag.items()}
-        self.dataset = self.make_dataset()
-
-    def get_tokens_and_tags(self, line):
-        tokens, tags = [], []
-        segments = line.strip().split()
-        for segment in segments:
-            if self.predict:
-                phrase = segment
-                tag = 'o'
-            else:
-                phrase, tag = segment.split('/')
-            sub_tokens = self.tokenizer.tokenize(phrase)
-            tokens.extend(sub_tokens)
-            if tag == 'o':
-                tags.extend(['o'] * len(sub_tokens))
-            else:
-                tags.append('B-' + tag)
-                tags.extend(['I-' + tag] * (len(sub_tokens) - 1))
-        return tokens, tags
-
-    def make_dataset(self):
-        datasets = []
-        with open(self.data_file, encoding='utf-8') as f:
-            for line in f:
-                tokens, tags = self.get_tokens_and_tags(line)
-                input_ids = self.tokenizer.convert_tokens_to_ids(tokens)[: self.max_len]
-                tag_ids = [self.tag2idx[tag] for tag in tags][: self.max_len]
-                masks = [1] * len(input_ids)
-                datasets.append({
-                    'input_ids': input_ids,
-                    'tag_ids': tag_ids,
-                    'masks': masks
-                })
-        return datasets
-
-    @staticmethod
-    def collocate_fn(batch):
-        max_seq_len = max([len(data['input_ids']) for data in batch])
-        input_ids = [data['input_ids'] + [0] * (max_seq_len - len(data['input_ids'])) for data in batch]
-        masks = [data['masks'] + [0] * (max_seq_len - len(data['masks'])) for data in batch]
-        tag_ids = [data['tag_ids'] + [0] * (max_seq_len - len(data['tag_ids'])) for data in batch]
-        return torch.LongTensor(input_ids), torch.LongTensor(tag_ids), torch.LongTensor(masks)
-
-
-class NERDataModule(LightningDataModule):
-    def __init__(self,
-                 data_dir: str = 'data',
-                 max_len: int = 200,
-                 batch_size: int = 16,
-                 model_name: str = 'BiLSTM-LAN',
-                 tag_file: str = 'data/idx2tag_question.json',
-                 pretrained_model_name: str = 'bert-base-chinese'):
-        """
-
-        :param data_dir: 数据存放目录
-        :param max_len: 数据保留的最大长度
-        :param batch_size:
-        :param pretrained_model_name:
-        """
-        super(NERDataModule, self).__init__()
-        self.data_dir = data_dir
-        self.max_len = max_len
-        self.batch_size = batch_size
-        self.dataset_class = get_dataset(model_name)
-        self.tag_file = tag_file
-        self.tokenizer = BertTokenizer.from_pretrained(pretrained_model_name)
-        self.train_dataset = None
-        self.val_dataset = None
-        self.test_dataset = None
-        self.predict_dataset = None
-
-        self.save_hyperparameters()
-
-    def setup(self, stage: Optional[str] = None) -> None:
-        train_file = os.path.join(self.data_dir, 'train.txt')
-        val_file = os.path.join(self.data_dir, 'dev.txt')
-        test_file = os.path.join(self.data_dir, 'test.txt')
-        predict_file = os.path.join(self.data_dir, 'predict.txt')
-
-        if stage == 'fit' or stage is None:
-            self.train_dataset = self.dataset_class(train_file, self.tag_file, self.tokenizer)
-            if os.path.isfile(val_file):
-                self.val_dataset = self.dataset_class(val_file, self.tag_file, self.tokenizer)
-            else:
-                data_size = len(self.train_dataset)
-                train_size = int(data_size * 0.8)
-                val_size = data_size - train_size
-                self.train_dataset, self.val_dataset = random_split(self.train_dataset, [train_size, val_size])
-
-        if stage == 'test' or stage is None:
-            if os.path.isfile(test_file):
-                self.test_dataset = self.dataset_class(test_file, self.tag_file, self.tokenizer)
-
-        if stage == 'predict' or stage is None:
-            self.predict_dataset = self.dataset_class(predict_file, self.tag_file, self.tokenizer, True)
-
-    def train_dataloader(self) -> TRAIN_DATALOADERS:
-        return DataLoader(self.train_dataset, self.batch_size, collate_fn=self.dataset_class.collocate_fn)
-
-    def val_dataloader(self) -> EVAL_DATALOADERS:
-        return DataLoader(self.val_dataset, self.batch_size, collate_fn=self.dataset_class.collocate_fn)
-
-    def test_dataloader(self) -> EVAL_DATALOADERS:
-        return DataLoader(self.test_dataset, self.batch_size, collate_fn=self.dataset_class.collocate_fn)
-
-    def predict_dataloader(self) -> EVAL_DATALOADERS:
-        return DataLoader(self.predict_dataset, self.batch_size, collate_fn=self.dataset_class.collocate_fn)
+        return ids, tokens, masks, input_ids, token_type_ids, start_labels, end_labels, span_labels
 
 
 if __name__ == '__main__':
-    filename = 'D:/code/NLP/InformationExtraction/data/test.txt'
-    tag_filename = 'D:/code/NLP/InformationExtraction/data/idx2tag.json'
-    tokenizer = BertTokenizer.from_pretrained('bert-base-chinese')
-    print(tokenizer.convert_tokens_to_ids(['[PAD]']))
-    # dataset = FlatNERDataSet(filename, tag_filename, tokenizer)
-    # dataset = FlatNERDataSet.collocate_fn(dataset[:10])
-    # print(dataset[0])
+    filename = 'C:/Users/ML-YX01/code/InformationExtraction/data/test.txt'
+    tag_filename = 'C:/Users/ML-YX01/code/InformationExtraction/data/tags.txt'
+    vocab = Vocab('C:/Users/ML-YX01/code/InformationExtraction/data/vocab.txt')
+    label_vocab = LabelVocab('C:/Users/ML-YX01/code/InformationExtraction/data/tags.txt')
+
+    dataset = FlatNERDataSet(vocab, label_vocab, max_len=200, data_file=filename)
+    dataset.make_dataset()
+    print(dataset[0])
+
+    # dataset = FlatNERDataSet().collocate_fn(dataset[:10])

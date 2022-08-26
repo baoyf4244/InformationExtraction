@@ -1,0 +1,8 @@
+[PAD]
+O
+B-NR
+I-NR
+B-NS
+I-NS
+B-NT
+I-NT

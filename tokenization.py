@@ -180,3 +180,4 @@ class KPEChineseCharTokenizer(ChineseCharTokenizer):
 
             with open(self.vocab_file, mode='w', encoding='utf-8') as f:
                 f.write('\n'.join(self.vocab))
+

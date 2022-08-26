@@ -255,10 +255,10 @@ class BiLSTMLanNERModule(NERModule):
         if tag_ids is None:
             return outputs.argmax(-1)
 
-        loss = self.compute_loss(outputs, tag_ids, masks)
+        loss = self.get_loss(outputs, tag_ids, masks)
         return outputs.argmax(-1), loss
 
-    def compute_loss(self, outputs, targets, masks=None):
+    def get_loss(self, outputs, targets, masks=None):
         batch_size = outputs.size(0)
         outputs = outputs.view(-1, self.num_labels)
         outputs = F.log_softmax(outputs, dim=-1)

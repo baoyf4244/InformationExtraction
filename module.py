@@ -1,7 +1,10 @@
+import json
 import os
+import utils
 import torch
+from enum import Enum
 from typing import Optional
-from torch.utils.data import DataLoader, random_split
+from torch.utils.data import Dataset, DataLoader, random_split
 from pytorch_lightning import LightningModule, LightningDataModule
 
 
@@ -90,23 +93,18 @@ class IEDataModule(LightningDataModule):
             self,
             max_len: int = 200,
             batch_size: int = 16,
-            data_dir: str = 'data',
-            model_name: str = 'BiLSTM-LAN',
-            tag_file: str = 'data/idx2tag_question.json'
+            data_dir: str = 'data'
     ):
         """
-
-        :param data_dir: 数据存放目录
-        :param max_len: 数据保留的最大长度
-        :param batch_size:
-        :param pretrained_model_name:
+        Args:
+            max_len:
+            batch_size:
+            data_dir:
         """
         super(IEDataModule, self).__init__()
-        self.data_dir = data_dir
         self.max_len = max_len
         self.batch_size = batch_size
-        self.dataset_class = self.get_dataset(model_name)
-        self.tag_file = tag_file
+        self.data_dir = data_dir
         self.train_dataset = None
         self.val_dataset = None
         self.test_dataset = None
@@ -114,23 +112,31 @@ class IEDataModule(LightningDataModule):
 
         self.save_hyperparameters()
 
-    @staticmethod
-    def get_dataset(model_name):
+    def get_dataset(self, data_file, is_predict=False):
         raise NotImplementedError
 
-    def get_tokenizer(self):
+    def collocate_fn(self, batch):
         raise NotImplementedError
+
+    @staticmethod
+    def pad_batch(batch, pad_token):
+        max_len = max(len(b) for b in batch)
+        batch = [b + [pad_token] * (max_len - len(b)) for b in batch]
+        return torch.LongTensor(batch)
+
+    @staticmethod
+    def get_data_by_name(batch, name):
+        return [b[name] for b in batch]
 
     def setup(self, stage: Optional[str] = None) -> None:
         train_file = os.path.join(self.data_dir, 'train.txt')
         val_file = os.path.join(self.data_dir, 'dev.txt')
         test_file = os.path.join(self.data_dir, 'test.txt')
         predict_file = os.path.join(self.data_dir, 'predict.txt')
-        tokenizer = self.get_tokenizer()
         if stage == 'fit' or stage is None:
-            self.train_dataset = self.dataset_class(train_file, self.tag_file, tokenizer)
+            self.train_dataset = self.get_dataset(train_file)
             if os.path.isfile(val_file):
-                self.val_dataset = self.dataset_class(val_file, self.tag_file, tokenizer)
+                self.val_dataset = self.get_dataset(val_file)
             else:
                 data_size = len(self.train_dataset)
                 train_size = int(data_size * 0.8)
@@ -139,20 +145,116 @@ class IEDataModule(LightningDataModule):
 
         if stage == 'test' or stage is None:
             if os.path.isfile(test_file):
-                self.test_dataset = self.dataset_class(test_file, self.tag_file, tokenizer)
+                self.test_dataset = self.get_dataset(test_file)
 
         if stage == 'predict' or stage is None:
-            self.predict_dataset = self.dataset_class(predict_file, self.tag_file, tokenizer, True)
+            self.predict_dataset = self.get_dataset(predict_file, True)
 
     def train_dataloader(self):
-        return DataLoader(self.train_dataset, self.batch_size, collate_fn=self.dataset_class.collocate_fn)
+        return DataLoader(self.train_dataset, self.batch_size, collate_fn=self.collocate_fn)
 
     def val_dataloader(self):
-        return DataLoader(self.val_dataset, self.batch_size, collate_fn=self.dataset_class.collocate_fn)
+        return DataLoader(self.val_dataset, self.batch_size, collate_fn=self.collocate_fn)
 
     def test_dataloader(self):
-        return DataLoader(self.test_dataset, self.batch_size, collate_fn=self.dataset_class.collocate_fn)
+        return DataLoader(self.test_dataset, self.batch_size, collate_fn=self.collocate_fn)
 
     def predict_dataloader(self):
-        return DataLoader(self.predict_dataset, self.batch_size, collate_fn=self.dataset_class.collocate_fn)
+        return DataLoader(self.predict_dataset, self.batch_size, collate_fn=self.collocate_fn)
+
+
+class IEDataSet(Dataset):
+    def __init__(self, data_file, max_len=200, is_predict=False, *args, **kwargs):
+        super(IEDataSet, self).__init__()
+        self.data_file = data_file
+        self.max_len = max_len
+        self.is_predict = is_predict
+        self.dataset = []
+
+    def get_data(self, line):
+        raise NotImplementedError
+
+    def make_dataset(self):
+        with open(self.data_file, encoding='utf-8') as f:
+            for i, line in enumerate(f):
+                line = json.loads(line)
+                data = self.get_data(line)
+
+                if isinstance(data, list):
+                    self.dataset.extend(data)
+                else:
+                    self.dataset.append(data)
+        return self.dataset
+
+    def __len__(self):
+        return len(self.dataset)
+
+    def __getitem__(self, item):
+        return self.dataset[item]
+
+
+class Vocab:
+    def __init__(self, vocab_file):
+        self.vocab_file = vocab_file
+        self.vocab = self.load_vocab()
+        self.word2idx = {v: idx for idx, v in enumerate(self.vocab)}
+
+    def load_vocab(self):
+        with open(self.vocab_file, encoding='utf-8') as f:
+            vocab = f.readlines()
+        return [v.strip() for v in vocab if v.strip()]
+
+    def convert_token_to_id(self, token):
+        return self.word2idx[token] if token in self.word2idx else self.word2idx[SpecialTokens.UNK.value]
+
+    def convert_tokens_to_ids(self, tokens):
+        return [self.convert_token_to_id(token) for token in tokens]
+
+    def convert_ids_to_tokens(self, ids):
+        return [self.vocab[idx] for idx in ids]
+
+    def convert_id_to_token(self, idx):
+        return self.vocab[idx]
+
+    def get_pad_id(self):
+        return self.word2idx[SpecialTokens.PAD.value]
+
+    @staticmethod
+    def get_pad_token():
+        return SpecialTokens.PAD.value
+
+    def get_unk_id(self):
+        return self.word2idx[SpecialTokens.UNK.value]
+
+    @staticmethod
+    def get_unk_token():
+        return SpecialTokens.UNK.value
+
+    def get_start_id(self):
+        return self.word2idx[SpecialTokens.SOS.value]
+
+    @staticmethod
+    def get_start_token():
+        return SpecialTokens.SOS.value
+
+    def get_end_id(self):
+        return self.word2idx[SpecialTokens.EOS.value]
+
+    @staticmethod
+    def get_end_token(self):
+        return SpecialTokens.EOS.value
+
+    def get_vocab_size(self):
+        return len(self.vocab)
+
+    def get_vocab(self):
+        return self.vocab
+
+
+class SpecialTokens(Enum):
+    PAD = '[PAD]'
+    UNK = '[UNK]'
+    SOS = '[CLS]'
+    EOS = '[SEP]'
+    NON_ENTITY = 'O'
 
