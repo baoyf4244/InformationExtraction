@@ -20,7 +20,7 @@ class Seq2SeqNREModule(LightningModule):
 
     def forward(self, input_ids, input_masks, input_vocab_maks, target_ids, inference=False):
         encoder_embeddings = self.embedding(input_ids)
-        encoder_outputs = self.encoder(encoder_embeddings)
+        encoder_outputs, _ = self.encoder(encoder_embeddings)
 
         batch_size, seq_len, _ = encoder_outputs.size()
         hidden = (self.h0.expand(batch_size, -1), self.c0.expand(batch_size, -1))
@@ -228,7 +228,7 @@ class Seq2SeqPTRNREModule(LightningModule):
     def forward(self, input_ids, input_masks, target_ids=None, inference=False):
         batch_size, encoder_step = input_ids.size()
         encoder_inputs = self.embedding(input_ids)
-        encoder_outputs = self.encoder(encoder_inputs)
+        encoder_outputs, _ = self.encoder(encoder_inputs)
 
         if inference:
             decoder_step = self.max_decode_step

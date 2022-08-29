@@ -3,7 +3,6 @@ import torch.nn as nn
 import torch.nn.functional as F
 from layers import MultiNonLinearLayer
 from ner.modeling_base import BertBasedModule
-from torch.utils.data import Dataset, DataLoader
 
 
 class MRCNERModule(BertBasedModule):

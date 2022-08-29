@@ -251,6 +251,18 @@ class Vocab:
         return self.vocab
 
 
+class LabelVocab(Vocab):
+    @staticmethod
+    def get_non_entity_token():
+        return SpecialTokens.NON_ENTITY.value
+
+    def get_non_entity_token_id(self):
+        return self.word2idx[SpecialTokens.NON_ENTITY.value]
+
+    def convert_token_to_id(self, token):
+        return self.word2idx[token]
+
+
 class SpecialTokens(Enum):
     PAD = '[PAD]'
     UNK = '[UNK]'

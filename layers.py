@@ -101,30 +101,14 @@ class MultiHeadAttention(nn.Module):
         return hiddens + query
 
 
-class BiLSTMLan(nn.Module):
-    def __init__(self, input_size, hidden_size, num_heads):
-        super(BiLSTMLan, self).__init__()
-        self.hidden_size = hidden_size
-        self.num_heads = num_heads
-        self.lstm = nn.LSTM(input_size, hidden_size // 2, 1, batch_first=True, bidirectional=True)
-        self.lan = MultiHeadAttention(num_heads, hidden_size)
-
-    def forward(self, inputs, label_inputs, masks=None, inference=False):
-        lstm_outputs, _ = self.lstm(inputs)
-        outputs = self.lan(lstm_outputs, label_inputs, label_inputs, masks, inference=inference)
-        if inference:
-            return outputs
-        return torch.cat([outputs, lstm_outputs], dim=-1)
-
-
 class Encoder(nn.Module):
     def __init__(self, input_size, hidden_size, num_layers, bidirectional=True):
         super(Encoder, self).__init__()
         self.lstm = nn.LSTM(input_size, hidden_size // 2, num_layers, batch_first=True, bidirectional=bidirectional)
 
     def forward(self, inputs):
-        outputs, _ = self.lstm(inputs)
-        return outputs
+        outputs, hidden = self.lstm(inputs)
+        return outputs, hidden
 
 
 class Decoder(nn.Module):

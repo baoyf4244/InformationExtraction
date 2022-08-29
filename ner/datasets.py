@@ -1,24 +1,6 @@
-import os
-import json
 import torch
-from typing import Optional
-from collections import defaultdict
-from module import IEDataSet, IEDataModule, Vocab, SpecialTokens
-from pytorch_lightning.utilities.types import TRAIN_DATALOADERS, EVAL_DATALOADERS
-from torch.utils.data import Dataset, DataLoader, random_split
 from transformers import BertTokenizer, AutoTokenizer
-
-
-class LabelVocab(Vocab):
-    @staticmethod
-    def get_non_entity_token():
-        return SpecialTokens.NON_ENTITY.value
-
-    def get_non_entity_token_id(self):
-        return self.word2idx[SpecialTokens.NON_ENTITY.value]
-
-    def convert_token_to_id(self, token):
-        return self.word2idx[token]
+from module import IEDataSet, IEDataModule, Vocab, LabelVocab
 
 
 class FlatNERDataSet(IEDataSet):
@@ -59,7 +41,7 @@ class FlatNERDataModule(IEDataModule):
         self.label_vocab = LabelVocab(label_file)
 
     def get_dataset(self, data_file, is_predict=False):
-        dataset = FlatNERDataSet(data_file, vocab=self.vocab, label_vocab=self.label_vocab,
+        dataset = FlatNERDataSet(data_file=data_file, vocab=self.vocab, label_vocab=self.label_vocab,
                                  max_len=self.max_len, is_predict=is_predict)
         dataset.make_dataset()
         return dataset
@@ -88,11 +70,11 @@ class MRCNERDataSet(IEDataSet):
 
     def get_data(self, line):
         dataset = []
-        tokens = self.tokenizer.tokenize(line['text'])
+        context_tokens = self.tokenizer.tokenize(line['text'])
         for label, question in self.label_question_mapping.items():
-            token_type_ids = [0] * (len(question) + 2) + [1] * len(tokens)
-            tokens = question + ['[SEP]'] + tokens
-            tokens = ['[CLS]'] + tokens[self.max_len - 3] + ['[SEP]']
+            token_type_ids = [0] * (len(question) + 2) + [1] * len(context_tokens)
+            tokens = question + ['[SEP]'] + context_tokens
+            tokens = ['[CLS]'] + tokens[: self.max_len - 2] + ['[SEP]']
             start_labels = [0] * len(tokens)
             end_labels = [0] * len(tokens)
             span_labels = [[0 for _ in range(len(tokens))] for _ in range(len(tokens))]
@@ -141,9 +123,9 @@ class MRCNERDataModule(IEDataModule):
     def pad_batch_2d(batch, pad_token):
         max_len = max(len(b) for b in batch)
         max_len_2d = max(len(b[0]) for b in batch)
-        padded_batch = torch.LongTensor([[pad_token for _ in  range(max_len_2d)] for _ in range(max_len)])
-        for i in range(max_len):
-            padded_batch[i, :len(batch[i])] = batch[i]
+        padded_batch = torch.fill(torch.zeros(len(batch), max_len, max_len_2d, dtype=torch.int64), pad_token)
+        for i in range(len(batch)):
+            padded_batch[i, :len(batch[i]), :len(batch[i][0])] = torch.LongTensor(batch[i])
         return padded_batch
 
     def collocate_fn(self, batch):
@@ -161,12 +143,19 @@ class MRCNERDataModule(IEDataModule):
 
 if __name__ == '__main__':
     filename = 'C:/Users/ML-YX01/code/InformationExtraction/data/test.txt'
-    tag_filename = 'C:/Users/ML-YX01/code/InformationExtraction/data/tags.txt'
-    vocab = Vocab('C:/Users/ML-YX01/code/InformationExtraction/data/vocab.txt')
-    label_vocab = LabelVocab('C:/Users/ML-YX01/code/InformationExtraction/data/tags.txt')
+    tag_filename = 'C:/Users/ML-YX01/code/InformationExtraction/data/ner/labels.txt'
+    question = 'C:/Users/ML-YX01/code/InformationExtraction/data/ner/questions.txt'
+    vocab_file = 'C:/Users/ML-YX01/code/InformationExtraction/data/vocab.txt'
+    # vocab = Vocab('C:/Users/ML-YX01/code/InformationExtraction/data/vocab.txt')
+    # label_vocab = LabelVocab('C:/Users/ML-YX01/code/InformationExtraction/data/tags.txt')
 
-    dataset = FlatNERDataSet(vocab, label_vocab, max_len=200, data_file=filename)
-    dataset.make_dataset()
-    print(dataset[0])
+    # dataset = FlatNERDataSet(vocab, label_vocab, max_len=200, data_file=filename)
+    # dataset.make_dataset()
+
+    data_module = MRCNERDataModule('bert-base-chinese', tag_filename, question, data_dir='data')
+    dataset = data_module.get_dataset(filename, False)
+    print(dataset[:10])
+    pad = data_module.collocate_fn(dataset[:10])
+    print(pad)
 
     # dataset = FlatNERDataSet().collocate_fn(dataset[:10])
