@@ -1,14 +1,67 @@
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from pytorch_lightning import LightningModule
-from layers import Encoder, Decoder, BahdanauAttention
-from tokenization_ptr import PTRTokenizer, WDTokenizer
-from module import LabelVocab, IEModule
 from nre.vocab import WDVocab, PTRLabelVocab
+from module import Vocab, LabelVocab, IEModule
+from layers import Encoder, Decoder, BahdanauAttention
 
 
-class Seq2SeqWDNREModule(IEModule):
+class Seq2SeqNREModule(IEModule):
+    @staticmethod
+    def get_f1_score(pred_num, gold_num, correct_num):
+        recall = correct_num / (1e-8 + gold_num)
+        precision = correct_num / (1e-8 + pred_num)
+        f1_score = 2 * recall * precision / (recall + precision + 1e-8)
+        return recall, precision, f1_score
+
+    def compute_step_stats(self, batch, stage):
+        preds, targets, target_masks, loss = self.get_training_outputs(batch)
+        pred_num, gold_num, correct_num = self.get_f1_stats(preds, targets)
+        recall, precision, f1_score = self.get_f1_score(pred_num, gold_num, correct_num)
+
+        logs = {
+            stage + '_loss': loss,
+            stage + '_gold_num': gold_num,
+            stage + '_pred_num': pred_num,
+            stage + '_correct_num': correct_num,
+            stage + '_recall': recall,
+            stage + '_precision': precision,
+            stage + '_f1_score': f1_score
+        }
+        if stage == 'train':
+            logs['loss'] = logs['train_loss']
+
+        self.log_dict(logs, prog_bar=True)
+        return logs
+
+    def compute_epoch_states(self, outputs, stage='val'):
+        pred_num = torch.Tensor([output[stage + '_pred_num'] for output in outputs]).sum()
+        gold_num = torch.Tensor([output[stage + '_gold_num'] for output in outputs]).sum()
+        correct_num = torch.Tensor([output[stage + '_correct_num'] for output in outputs]).sum()
+        loss = torch.stack([output[stage + '_loss'] for output in outputs]).mean()
+
+        recall, precision, f1 = self.get_f1_score(pred_num, gold_num, correct_num)
+
+        logs = {
+            stage + '_pred_num': pred_num,
+            stage + '_gold_num': gold_num,
+            stage + '_correct_num': correct_num,
+            stage + '_loss': loss,
+            stage + '_f1_score': f1,
+            stage + '_recall': recall,
+            stage + '_precision': precision
+        }
+
+        self.log_dict(logs)
+
+    def get_training_outputs(self, batch):
+        raise NotImplementedError
+
+    def get_f1_stats(self, preds, targets, masks=None):
+        raise NotImplementedError
+
+
+class Seq2SeqWDNREModule(Seq2SeqNREModule):
     def __init__(self, vocab_file, label_file, embedding_size, hidden_size, num_layers, decoder_max_steps):
         super(Seq2SeqWDNREModule, self).__init__()
         self.label_vocab = LabelVocab(label_file)
@@ -21,9 +74,9 @@ class Seq2SeqWDNREModule(IEModule):
 
         self.register_buffer('h0', torch.zeros(1, hidden_size, dtype=torch.float))
         self.register_buffer('c0', torch.zeros(1, hidden_size, dtype=torch.float))
-        self.register_buffer('start_ids', torch.LongTensor([[self.tokenizer.get_start_id()]]))
+        self.register_buffer('start_ids', torch.LongTensor([[self.vocab.get_start_id()]]))
 
-    def forward(self, input_ids, input_masks, input_vocab_maks, target_ids, inference=False):
+    def forward(self, input_ids, input_masks, input_vocab_masks, target_ids, inference=False):
         encoder_embeddings = self.embedding(input_ids)
         encoder_outputs, _ = self.encoder(encoder_embeddings)
 
@@ -46,7 +99,7 @@ class Seq2SeqWDNREModule(IEModule):
             decoder_input = self.embedding(decoder_input_id)
             output, hidden, att_score = self.decoder(encoder_outputs, input_masks, decoder_input, hidden)
             if inference:
-                output = torch.masked_fill(output, input_vocab_maks, float('-inf'))
+                output = torch.masked_fill(output, input_vocab_masks, float('-inf'))
             outputs.append(output.unsqueeze(1))
             att_scores.append(att_score.argmax(1, keepdim=True))
 
@@ -89,13 +142,6 @@ class Seq2SeqWDNREModule(IEModule):
 
         return pred_num, gold_num, correct_num
 
-    @staticmethod
-    def get_f1_score(pred_num, gold_num, correct_num):
-        recall = correct_num / (1e-8 + gold_num)
-        precision = correct_num / (1e-8 + pred_num)
-        f1_score = 2 * recall * precision / (recall + precision + 1e-8)
-        return recall, precision, f1_score
-
     def get_training_outputs(self, batch):
         tokens, targets, input_ids, input_masks, input_vocab_masks, target_ids, target_masks = batch
         outputs, att_scores = self(input_ids, input_masks, input_vocab_masks, target_ids)
@@ -106,110 +152,14 @@ class Seq2SeqWDNREModule(IEModule):
         loss = loss.sum() / target_ids.size(0)
         return preds, targets, target_masks, loss
 
-    def compute_step_stats(self, batch, stage):
-        preds, targets, target_masks, loss = self.get_training_outputs(batch)
-        pred_num, gold_num, correct_num = self.get_f1_stats(preds, targets)
-        recall, precision, f1_score = self.get_f1_score(pred_num, gold_num, correct_num)
 
-        logs = {
-            stage + '_loss': loss,
-            stage + '_gold_num': gold_num,
-            stage + '_pred_num': pred_num,
-            stage + '_correct_num': correct_num,
-            stage + '_recall': recall,
-            stage + '_precision': precision,
-            stage + '_f1_score': f1_score
-        }
-        if stage == 'train':
-            logs['loss'] = logs['train_loss']
-
-        self.log_dict(logs, prog_bar=True)
-        return logs
-
-    def compute_epoch_states(self, outputs, stage='val'):
-        pred_num = torch.Tensor([output[stage + '_pred_num'] for output in outputs]).sum()
-        gold_num = torch.Tensor([output[stage + '_gold_num'] for output in outputs]).sum()
-        correct_num = torch.Tensor([output[stage + '_correct_num'] for output in outputs]).sum()
-        loss = torch.stack([output[stage + '_loss'] for output in outputs]).mean()
-
-        recall, precision, f1 = self.get_f1_score(pred_num, gold_num, correct_num)
-
-        logs = {
-            stage + '_pred_num': pred_num,
-            stage + '_gold_num': gold_num,
-            stage + '_correct_num': correct_num,
-            stage + '_loss': loss,
-            stage + '_f1_score': f1,
-            stage + '_recall': recall,
-            stage + '_precision': precision
-        }
-
-        self.log_dict(logs)
-
-
-class PTRDecoder(nn.Module):
-    def __init__(self, input_size, hidden_size, num_layers, num_labels):
-        """
-
-        Args:
-            input_size: tgt input size
-            hidden_size: src, tgt hidden size
-            num_layers:
-            num_labels:
-        """
-        super(PTRDecoder, self).__init__()
-        self.lstm = nn.LSTMCell(input_size + hidden_size, hidden_size)
-        self.attention = BahdanauAttention(hidden_size, hidden_size)
-
-        self.head_lstm = nn.LSTM(2 * hidden_size, hidden_size, num_layers, batch_first=True, bidirectional=True)
-        self.head_start_cls = nn.Linear(2 * hidden_size, 1)
-        self.head_end_cls = nn.Linear(2 * hidden_size, 1)
-
-        self.tail_lstm = nn.LSTM(4 * hidden_size, hidden_size, num_layers, batch_first=True, bidirectional=True)
-        self.tail_start_cls = nn.Linear(2 * hidden_size, 1)
-        self.tail_end_cls = nn.Linear(2 * hidden_size, 1)
-
-        self.relation_cls = nn.Linear(8 * hidden_size + input_size, num_labels)
-
-    def forward(self, encoder_outputs, encoder_masks, decoder_input, decoder_hidden):
-        att_output, att_scores = self.attention(decoder_input, encoder_outputs, encoder_masks)
-        decoder_output, hidden = self.lstm(torch.cat([decoder_input, att_output], -1), decoder_hidden)
-
-        head_inputs = torch.cat([encoder_outputs, decoder_output.unsqueeze(1).repeat(1, encoder_outputs.size(1), 1)], -1)
-        head_outputs, _ = self.head_lstm(head_inputs)  # [bs, ts, 2 * hs]
-        head_start_logits = self.head_start_cls(head_outputs).squeeze()  # [bs, ts]
-        head_start_logits = torch.masked_fill(head_start_logits, encoder_masks, float('-inf'))
-        head_end_logits = self.head_end_cls(head_outputs).squeeze()
-        head_end_logits = torch.masked_fill(head_end_logits, encoder_masks, float('-inf'))
-
-        tail_inputs = torch.cat([head_inputs, head_outputs], -1)
-        tail_outputs, _ = self.tail_lstm(tail_inputs)
-        tail_start_logits = self.tail_start_cls(tail_outputs).squeeze()
-        tail_start_logits = torch.masked_fill(tail_start_logits, encoder_masks, float('-inf'))
-        tail_end_logits = self.tail_end_cls(tail_outputs).squeeze()
-        tail_end_logits = torch.masked_fill(tail_end_logits, encoder_masks, float('-inf'))
-
-        entity_outputs = torch.cat([torch.bmm(F.softmax(head_start_logits, -1).unsqueeze(1), head_outputs).squeeze(),
-                                    torch.bmm(F.softmax(head_end_logits, -1).unsqueeze(1), head_outputs).squeeze(),
-                                    torch.bmm(F.softmax(tail_start_logits, -1).unsqueeze(1), tail_outputs).squeeze(),
-                                    torch.bmm(F.softmax(tail_end_logits, -1).unsqueeze(1), tail_outputs).squeeze()],
-                                   -1)
-        relation_inputs = torch.cat([entity_outputs, decoder_output], -1)
-
-        relation_logits = self.relation_cls(relation_inputs)
-
-        return head_start_logits, head_end_logits, tail_start_logits, tail_end_logits, relation_logits, (decoder_output, hidden), entity_outputs
-
-
-class Seq2SeqPTRNREModule(LightningModule):
+class Seq2SeqPTRNREModule(Seq2SeqNREModule):
     def __init__(self, vocab_file, label_file, embedding_size, hidden_size, num_layers, max_decoder_step):
         super(Seq2SeqPTRNREModule, self).__init__()
-        self.max_decode_step = max_decoder_step
-        self.tokenizer = PTRTokenizer(vocab_file)
-        with open(label_file, encoding='utf-8') as f:
-            relations = f.readlines()
-        self.relations = [rel.strip() for rel in relations if rel.strip()]
+        self.vocab = Vocab(vocab_file)
+        self.label_vocab = PTRLabelVocab(label_file)
 
+        self.max_decode_step = max_decoder_step
         self.embedding = nn.Embedding(self.tokenizer.get_vocab_size(), embedding_size)
         self.label_embedding = nn.Embedding(len(self.relations), embedding_size)
         self.encoder = Encoder(embedding_size, hidden_size, num_layers)
@@ -289,8 +239,7 @@ class Seq2SeqPTRNREModule(LightningModule):
 
         return triples
 
-    @staticmethod
-    def get_f1_stats(preds, targets):
+    def get_f1_stats(self, preds, targets, masks=None):
         pred_num = 0
         gold_num = 0
         correct_num = 0
@@ -302,78 +251,80 @@ class Seq2SeqPTRNREModule(LightningModule):
                     correct_num += 1
         return pred_num, gold_num, correct_num
 
-    @staticmethod
-    def get_f1_score(pred_num, gold_num, correct_num):
-        recall = correct_num / (gold_num + 1e-8)
-        precision = correct_num / (pred_num + 1e-8)
-        f1_score = 2 * recall * precision / (recall + precision + 1e-8)
-        return precision, recall, f1_score
-
-    def compute_step_stats(self, batch, stage):
+    def get_training_outputs(self, batch):
         input_ids, input_masks, head_start_ids, head_end_ids, tail_start_ids, tail_end_ids, target_ids, target_masks = batch
-        head_start_logits, head_end_logits, tail_start_logits, tail_end_logits, relation_logits = self(input_ids, input_masks, target_ids, False)
-        head_start_loss = F.cross_entropy(head_start_logits.view(-1, head_start_logits.size(-1)), head_start_ids.view(-1), reduction='sum', ignore_index=-1)
-        head_end_loss = F.cross_entropy(head_end_logits.view(-1, head_end_logits.size(-1)), head_end_ids.view(-1), reduction='sum', ignore_index=-1)
-        tail_start_loss = F.cross_entropy(tail_start_logits.view(-1, tail_start_logits.size(-1)), tail_start_ids.view(-1), reduction='sum', ignore_index=-1)
-        tail_end_loss = F.cross_entropy(tail_end_logits.view(-1, tail_end_logits.size(-1)), tail_end_ids.view(-1), reduction='sum', ignore_index=-1)
-        relation_loss = F.cross_entropy(relation_logits.view(-1, relation_logits.size(-1)), target_ids.view(-1), reduction='sum', ignore_index=0)
+        head_start_logits, head_end_logits, tail_start_logits, tail_end_logits, relation_logits = self(input_ids,
+                                                                                                       input_masks,
+                                                                                                       target_ids,
+                                                                                                       False)
+        head_start_loss = F.cross_entropy(head_start_logits.view(-1, head_start_logits.size(-1)),
+                                          head_start_ids.view(-1), reduction='sum', ignore_index=-1)
+        head_end_loss = F.cross_entropy(head_end_logits.view(-1, head_end_logits.size(-1)), head_end_ids.view(-1),
+                                        reduction='sum', ignore_index=-1)
+        tail_start_loss = F.cross_entropy(tail_start_logits.view(-1, tail_start_logits.size(-1)),
+                                          tail_start_ids.view(-1), reduction='sum', ignore_index=-1)
+        tail_end_loss = F.cross_entropy(tail_end_logits.view(-1, tail_end_logits.size(-1)), tail_end_ids.view(-1),
+                                        reduction='sum', ignore_index=-1)
+        relation_loss = F.cross_entropy(relation_logits.view(-1, relation_logits.size(-1)), target_ids.view(-1),
+                                        reduction='sum', ignore_index=0)
 
         loss = (head_start_loss + head_end_loss + tail_start_loss + tail_end_loss + relation_loss) / input_ids.size(0)
 
         pred_triples = self.get_batch_results(head_start_logits, head_end_logits, tail_start_logits,
                                               tail_end_logits, relation_logits)
         target_triples = self.get_batch_results(head_start_ids, head_end_ids, tail_start_ids, tail_end_ids, target_ids)
-        pred_num, gold_num, correct_num = self.get_f1_stats(pred_triples, target_triples)
-        precision, recall, f1_score = self.get_f1_score(pred_num, gold_num, correct_num)
-
-        logs = {
-            stage + '_loss': loss,
-            stage + '_gold_num': gold_num,
-            stage + '_pred_num': pred_num,
-            stage + '_correct_num': correct_num,
-            stage + '_recall': recall,
-            stage + '_precision': precision,
-            stage + '_f1_score': f1_score
-        }
-        if stage == 'train':
-            logs['loss'] = logs['train_loss']
-
-        self.log_dict(logs, prog_bar=True)
-        return logs
-
-    def compute_epoch_states(self, outputs, stage='val'):
-        pred_num = torch.Tensor([output[stage + '_pred_num'] for output in outputs]).sum()
-        gold_num = torch.Tensor([output[stage + '_gold_num'] for output in outputs]).sum()
-        correct_num = torch.Tensor([output[stage + '_correct_num'] for output in outputs]).sum()
-        loss = torch.stack([output[stage + '_loss'] for output in outputs]).mean()
-
-        recall, precision, f1 = self.get_f1_score(pred_num, gold_num, correct_num)
-
-        logs = {
-            stage + '_pred_num': pred_num,
-            stage + '_gold_num': gold_num,
-            stage + '_correct_num': correct_num,
-            stage + '_loss': loss,
-            stage + '_f1_score': f1,
-            stage + '_recall': recall,
-            stage + '_precision': precision
-        }
-
-        self.log_dict(logs)
-
-    def training_step(self, batch):
-        logs = self.compute_step_stats(batch, 'train')
-        return logs
-
-    def training_epoch_end(self, outputs):
-        self.compute_epoch_states(outputs, 'train')
-
-    def validation_step(self, batch, batch_idx):
-        logs = self.compute_step_stats(batch, 'val')
-        return logs
-
-    def validation_epoch_end(self, outputs):
-        self.compute_epoch_states(outputs, 'val')
+        return pred_triples, target_triples, target_masks, loss
 
 
+class PTRDecoder(nn.Module):
+    def __init__(self, input_size, hidden_size, num_layers, num_labels):
+        """
 
+        Args:
+            input_size: tgt input size
+            hidden_size: src, tgt hidden size
+            num_layers:
+            num_labels:
+        """
+        super(PTRDecoder, self).__init__()
+        self.lstm = nn.LSTMCell(input_size + hidden_size, hidden_size)
+        self.attention = BahdanauAttention(hidden_size, hidden_size)
+
+        self.head_lstm = nn.LSTM(2 * hidden_size, hidden_size, num_layers, batch_first=True, bidirectional=True)
+        self.head_start_cls = nn.Linear(2 * hidden_size, 1)
+        self.head_end_cls = nn.Linear(2 * hidden_size, 1)
+
+        self.tail_lstm = nn.LSTM(4 * hidden_size, hidden_size, num_layers, batch_first=True, bidirectional=True)
+        self.tail_start_cls = nn.Linear(2 * hidden_size, 1)
+        self.tail_end_cls = nn.Linear(2 * hidden_size, 1)
+
+        self.relation_cls = nn.Linear(8 * hidden_size + input_size, num_labels)
+
+    def forward(self, encoder_outputs, encoder_masks, decoder_input, decoder_hidden):
+        att_output, att_scores = self.attention(decoder_input, encoder_outputs, encoder_masks)
+        decoder_output, hidden = self.lstm(torch.cat([decoder_input, att_output], -1), decoder_hidden)
+
+        head_inputs = torch.cat([encoder_outputs, decoder_output.unsqueeze(1).repeat(1, encoder_outputs.size(1), 1)], -1)
+        head_outputs, _ = self.head_lstm(head_inputs)  # [bs, ts, 2 * hs]
+        head_start_logits = self.head_start_cls(head_outputs).squeeze()  # [bs, ts]
+        head_start_logits = torch.masked_fill(head_start_logits, encoder_masks, float('-inf'))
+        head_end_logits = self.head_end_cls(head_outputs).squeeze()
+        head_end_logits = torch.masked_fill(head_end_logits, encoder_masks, float('-inf'))
+
+        tail_inputs = torch.cat([head_inputs, head_outputs], -1)
+        tail_outputs, _ = self.tail_lstm(tail_inputs)
+        tail_start_logits = self.tail_start_cls(tail_outputs).squeeze()
+        tail_start_logits = torch.masked_fill(tail_start_logits, encoder_masks, float('-inf'))
+        tail_end_logits = self.tail_end_cls(tail_outputs).squeeze()
+        tail_end_logits = torch.masked_fill(tail_end_logits, encoder_masks, float('-inf'))
+
+        entity_outputs = torch.cat([torch.bmm(F.softmax(head_start_logits, -1).unsqueeze(1), head_outputs).squeeze(),
+                                    torch.bmm(F.softmax(head_end_logits, -1).unsqueeze(1), head_outputs).squeeze(),
+                                    torch.bmm(F.softmax(tail_start_logits, -1).unsqueeze(1), tail_outputs).squeeze(),
+                                    torch.bmm(F.softmax(tail_end_logits, -1).unsqueeze(1), tail_outputs).squeeze()],
+                                   -1)
+        relation_inputs = torch.cat([entity_outputs, decoder_output], -1)
+
+        relation_logits = self.relation_cls(relation_inputs)
+
+        return head_start_logits, head_end_logits, tail_start_logits, tail_end_logits, relation_logits, (decoder_output, hidden), entity_outputs

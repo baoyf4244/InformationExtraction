@@ -1,11 +1,9 @@
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from collections import namedtuple
-from tokenization import KPEChineseCharTokenizer
-from pytorch_lightning import LightningModule
 
-torch.autograd.set_detect_anomaly(True)
+from module import IEModule
+from kpe.vocab import KPESeq2SeqVocab
 
 
 class Encoder(nn.Module):
@@ -119,26 +117,27 @@ class Decoder(nn.Module):
         return decoder_hidden, attention_outputs, attention_scores
 
 
-class Seq2SeqKPEModule(LightningModule):
+class Seq2SeqKPEModule(IEModule):
     def __init__(self, embedding_size, hidden_size, num_layers, decoder_max_steps, beam_size,
                  vocab_file, coverage=True):
         super(Seq2SeqKPEModule, self).__init__()
+        self.vocab = KPESeq2SeqVocab(vocab_file)
+
         self.coverage = coverage
         self.beam_size = beam_size
-        self.tokenizer = KPEChineseCharTokenizer(vocab_file)
         self.decoder_max_steps = decoder_max_steps
         self.embedding = nn.Embedding(self.tokenizer.get_vocab_size(), embedding_size)
         self.encoder = Encoder(embedding_size, hidden_size, num_layers)
         self.decoder = Decoder(hidden_size, embedding_size, hidden_size, hidden_size, coverage)
         self.pointer = PointGeneratorNetWork(hidden_size, hidden_size, embedding_size)
+        self.linear = nn.Sequential(nn.Linear(hidden_size + hidden_size, hidden_size),
+                                    nn.Linear(hidden_size, self.tokenizer.get_vocab_size()))
+
         if coverage:
             self.register_buffer('coverage_memery', torch.zeros(1, 1))
 
         self.register_buffer('start_ids', torch.LongTensor([self.tokenizer.get_start_id()]))
         self.register_buffer('vocab_extended', torch.zeros(1, 1))
-
-        self.linear = nn.Sequential(nn.Linear(hidden_size + hidden_size, hidden_size),
-                                    nn.Linear(hidden_size, self.tokenizer.get_vocab_size()))
 
     def forward(self, input_ids, input_masks, input_vocab_ids, oov_ids, target_ids):
         inputs = self.embedding(input_ids)
@@ -195,7 +194,7 @@ class Seq2SeqKPEModule(LightningModule):
 
         return p, decoder_hidden, coverage_memery
 
-    def compute_step_stats(self, batch, stage):
+    def get_training_outputs(self, batch):
         ids, targets, input_ids, input_masks, target_ids, target_masks, input_vocab_ids, oov_ids, oov_id_masks, oov2idx = batch
         idx2oov = [{v: k for k, v in oov.items()} for oov in oov2idx]
         props = self(input_ids, input_masks, input_vocab_ids, oov_ids, target_ids)
@@ -204,59 +203,8 @@ class Seq2SeqKPEModule(LightningModule):
         # loss = F.cross_entropy(props.view(-1, props.size(-1)), target_ids.view(-1), reduction='none')
         # loss = loss.view(-1, target_ids.size(1)) * target_masks
         loss = loss.sum() / loss.size(0)
-
         seqs = self.get_batch_seqs(props, self.tokenizer.get_vocab(), idx2oov)
-        pred_num, gold_num, correct_num = self.get_f1_stats(seqs, targets)
-        recall, precision, f1_score = self.get_f1_score(pred_num, gold_num, correct_num)
-
-        logs = {
-            stage + '_loss': loss,
-            stage + '_pred_num': pred_num,
-            stage + '_gold_num': gold_num,
-            stage + '_correct_num': correct_num,
-            stage + '_recall': recall,
-            stage + '_precision': precision,
-            stage + '_f1_score': f1_score
-        }
-        if stage == 'train':
-            logs['loss'] = logs['train_loss']
-
-        self.log_dict(logs, prog_bar=True)
-        return logs
-
-    def compute_epoch_states(self, outputs, stage='val'):
-        pred_num = torch.Tensor([output[stage + '_pred_num'] for output in outputs]).sum()
-        gold_num = torch.Tensor([output[stage + '_gold_num'] for output in outputs]).sum()
-        correct_num = torch.Tensor([output[stage + '_correct_num'] for output in outputs]).sum()
-        loss = torch.stack([output[stage + '_loss'] for output in outputs]).mean()
-
-        recall, precision, f1 = self.get_f1_score(pred_num, gold_num, correct_num)
-
-        logs = {
-            stage + '_pred_num': pred_num,
-            stage + '_gold_num': gold_num,
-            stage + '_correct_num': correct_num,
-            stage + '_loss': loss,
-            stage + '_f1_score': f1,
-            stage + '_recall': recall,
-            stage + '_precision': precision
-        }
-
-        self.log_dict(logs)
-
-    def training_step(self, batch, batch_idx):
-        logs = self.compute_step_stats(batch, 'train')
-        return logs
-
-    def training_epoch_end(self, outputs):
-        self.compute_epoch_states(outputs, 'train')
-
-    def validation_step(self, batch, batch_idx):
-        logs = self.compute_step_stats(batch, 'val')
-        return logs
-
-    def validation_epoch_end(self, outputs):
-        self.compute_epoch_states(outputs, 'val')
+        return seqs, targets, input_masks, loss
 
     def get_seqs(self, input_ids, idx2word, idx2oov):
         seqs = []
@@ -275,8 +223,7 @@ class Seq2SeqKPEModule(LightningModule):
             seqs.append(seq)
         return seqs
 
-    @staticmethod
-    def get_f1_stats(preds, targets):
+    def get_f1_stats(self, preds, targets, masks=None):
         pred_num = 0
         gold_num = 0
         correct_num = 0
@@ -288,11 +235,5 @@ class Seq2SeqKPEModule(LightningModule):
             correct_num += len((set(pred).intersection(set(target))))
         return pred_num, gold_num, correct_num
 
-    @staticmethod
-    def get_f1_score(pred_num, gold_num, correct_num):
-        recall = correct_num / (gold_num + 1e-8)
-        precision = correct_num / (pred_num + 1e-8)
-        f1 = 2 * recall * precision / (recall + precision + 1e-8)
-        return recall, precision, f1
 
 

@@ -309,6 +309,26 @@ class Vocab(LabelVocab):
         return self.word2idx[token] if token in self.word2idx else self.word2idx[SpecialTokens.UNK.value]
 
 
+class Seq2SeqVocab(Vocab):
+    @staticmethod
+    def get_special_tokens():
+        return super().get_special_tokens() + [SpecialTokens.SOS.value, SpecialTokens.EOS.value]
+
+    def get_start_id(self):
+        return self.word2idx[SpecialTokens.SOS.value]
+
+    @staticmethod
+    def get_start_token():
+        return SpecialTokens.SOS.value
+
+    def get_end_id(self):
+        return self.word2idx[SpecialTokens.EOS.value]
+
+    @staticmethod
+    def get_end_token():
+        return SpecialTokens.EOS.value
+
+
 class SpecialTokens(Enum):
     PAD = '[PAD]'
     UNK = '[UNK]'
