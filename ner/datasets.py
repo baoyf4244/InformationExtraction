@@ -1,10 +1,12 @@
 import torch
 from transformers import BertTokenizer, AutoTokenizer
-from module import IEDataSet, IEDataModule, Vocab, LabelVocab
+
+from ner.vocab import EntityLabelVocab
+from module import IEDataSet, IEDataModule, Vocab
 
 
 class FlatNERDataSet(IEDataSet):
-    def __init__(self, vocab, label_vocab: LabelVocab, *args, **kwargs):
+    def __init__(self, vocab, label_vocab: EntityLabelVocab, *args, **kwargs):
         super(FlatNERDataSet, self).__init__(*args, **kwargs)
         self.vocab = vocab
         self.label_vocab = label_vocab
@@ -38,7 +40,7 @@ class FlatNERDataModule(IEDataModule):
     def __init__(self, vocab_file, label_file, *args, **kwargs):
         super(FlatNERDataModule, self).__init__(*args, **kwargs)
         self.vocab = Vocab(vocab_file)
-        self.label_vocab = LabelVocab(label_file)
+        self.label_vocab = EntityLabelVocab(label_file)
 
     def get_dataset(self, data_file, is_predict=False):
         dataset = FlatNERDataSet(data_file=data_file, vocab=self.vocab, label_vocab=self.label_vocab,
@@ -110,8 +112,8 @@ class MRCNERDataModule(IEDataModule):
     def __init__(self, pretrained_model_name, label_file, question_file, *args, **kwargs):
         super(MRCNERDataModule, self).__init__(*args, **kwargs)
         self.tokenizer = AutoTokenizer.from_pretrained(pretrained_model_name)
-        self.label_vocab = LabelVocab(label_file)
-        self.question_vocab = LabelVocab(question_file)
+        self.label_vocab = EntityLabelVocab(label_file)
+        self.question_vocab = EntityLabelVocab(question_file)
 
     def get_dataset(self, data_file, is_predict=False):
         dataset = MRCNERDataSet(self.tokenizer, self.label_vocab, self.question_vocab, data_file=data_file,

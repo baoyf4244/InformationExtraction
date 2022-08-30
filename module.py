@@ -213,7 +213,7 @@ class IEDataModule(LightningDataModule):
 
 
 class IEDataSet(Dataset):
-    def __init__(self, data_file, max_len=200, is_predict=False, *args, **kwargs):
+    def __init__(self, data_file, max_len=200, is_predict=False):
         super(IEDataSet, self).__init__()
         self.data_file = data_file
         self.max_len = max_len
@@ -242,19 +242,30 @@ class IEDataSet(Dataset):
         return self.dataset[item]
 
 
-class Vocab:
+class LabelVocab:
     def __init__(self, vocab_file):
         self.vocab_file = vocab_file
+        self.special_tokens = self.get_special_tokens()
         self.vocab = self.load_vocab()
         self.word2idx = {v: idx for idx, v in enumerate(self.vocab)}
 
     def load_vocab(self):
         with open(self.vocab_file, encoding='utf-8') as f:
             vocab = f.readlines()
-        return [v.strip() for v in vocab if v.strip()]
+        vocab = [v.strip() for v in vocab if v.strip()]
+        special_vocab = []
+        for v in vocab:
+            if v not in self.special_tokens:
+                special_vocab.append(v)
+
+        return self.special_tokens + special_vocab
+
+    @staticmethod
+    def get_special_tokens():
+        return []
 
     def convert_token_to_id(self, token):
-        return self.word2idx[token] if token in self.word2idx else self.word2idx[SpecialTokens.UNK.value]
+        return self.word2idx[token]
 
     def convert_tokens_to_ids(self, tokens):
         return [self.convert_token_to_id(token) for token in tokens]
@@ -264,6 +275,18 @@ class Vocab:
 
     def convert_id_to_token(self, idx):
         return self.vocab[idx]
+
+    def get_vocab_size(self):
+        return len(self.vocab)
+
+    def get_vocab(self):
+        return self.vocab
+
+
+class Vocab(LabelVocab):
+    @staticmethod
+    def get_special_tokens():
+        return [SpecialTokens.PAD.value, SpecialTokens.UNK.value]
 
     def get_pad_id(self):
         return self.word2idx[SpecialTokens.PAD.value]
@@ -276,40 +299,14 @@ class Vocab:
         return self.word2idx[SpecialTokens.UNK.value]
 
     @staticmethod
-    def get_unk_token():
+    def get_unk_token(self):
         return SpecialTokens.UNK.value
 
-    def get_start_id(self):
-        return self.word2idx[SpecialTokens.SOS.value]
-
-    @staticmethod
-    def get_start_token():
-        return SpecialTokens.SOS.value
-
-    def get_end_id(self):
-        return self.word2idx[SpecialTokens.EOS.value]
-
-    @staticmethod
-    def get_end_token(self):
-        return SpecialTokens.EOS.value
-
-    def get_vocab_size(self):
-        return len(self.vocab)
-
-    def get_vocab(self):
-        return self.vocab
-
-
-class LabelVocab(Vocab):
-    @staticmethod
-    def get_non_entity_token():
-        return SpecialTokens.NON_ENTITY.value
-
-    def get_non_entity_token_id(self):
-        return self.word2idx[SpecialTokens.NON_ENTITY.value]
+    def tokenize(self, text):
+        return text.split()
 
     def convert_token_to_id(self, token):
-        return self.word2idx[token]
+        return self.word2idx[token] if token in self.word2idx else self.word2idx[SpecialTokens.UNK.value]
 
 
 class SpecialTokens(Enum):
@@ -317,5 +314,7 @@ class SpecialTokens(Enum):
     UNK = '[UNK]'
     SOS = '[CLS]'
     EOS = '[SEP]'
+    VERTICAL = '|'
+    SEMICOLON = ';'
     NON_ENTITY = 'O'
 

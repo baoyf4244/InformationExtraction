@@ -1,12 +1,10 @@
-import json
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
-from module import Vocab, LabelVocab
+from torchcrf import CRF
 from layers import MultiHeadAttention
 from ner.modeling_base import NERModule
-from torchcrf import CRF
 
 
 class BiLSTMLan(nn.Module):

@@ -4,16 +4,21 @@ import torch.nn.functional as F
 from pytorch_lightning import LightningModule
 from layers import Encoder, Decoder, BahdanauAttention
 from tokenization_ptr import PTRTokenizer, WDTokenizer
+from module import LabelVocab, IEModule
+from nre.vocab import WDVocab, PTRLabelVocab
 
 
-class Seq2SeqNREModule(LightningModule):
+class Seq2SeqWDNREModule(IEModule):
     def __init__(self, vocab_file, label_file, embedding_size, hidden_size, num_layers, decoder_max_steps):
-        super(Seq2SeqNREModule, self).__init__()
+        super(Seq2SeqWDNREModule, self).__init__()
+        self.label_vocab = LabelVocab(label_file)
+        self.vocab = WDVocab(self.label_vocab, vocab_file=vocab_file)
+
         self.decoder_max_steps = decoder_max_steps
-        self.tokenizer = WDTokenizer(vocab_file=vocab_file, label_file=label_file)
         self.embedding = nn.Embedding(self.tokenizer.get_vocab_size(), embedding_size)
         self.encoder = Encoder(embedding_size, hidden_size, num_layers)
         self.decoder = Decoder(embedding_size, hidden_size, self.tokenizer.get_vocab_size())
+
         self.register_buffer('h0', torch.zeros(1, hidden_size, dtype=torch.float))
         self.register_buffer('c0', torch.zeros(1, hidden_size, dtype=torch.float))
         self.register_buffer('start_ids', torch.LongTensor([[self.tokenizer.get_start_id()]]))
@@ -70,8 +75,7 @@ class Seq2SeqNREModule(LightningModule):
             preds.append(self.get_results(pred_id, att_score, token))
         return preds
 
-    @staticmethod
-    def get_f1_stats(preds, targets):
+    def get_f1_stats(self, preds, targets, masks=None):
         pred_num = 0
         gold_num = 0
         correct_num = 0
@@ -92,13 +96,18 @@ class Seq2SeqNREModule(LightningModule):
         f1_score = 2 * recall * precision / (recall + precision + 1e-8)
         return recall, precision, f1_score
 
-    def compute_step_stats(self, batch, stage):
-        tokens, targets, input_ids, input_masks, input_vocab_masks, target_ids = batch
+    def get_training_outputs(self, batch):
+        tokens, targets, input_ids, input_masks, input_vocab_masks, target_ids, target_masks = batch
         outputs, att_scores = self(input_ids, input_masks, input_vocab_masks, target_ids)
         pred_ids = outputs.argmax(-1)
         preds = self.get_batch_results(pred_ids, att_scores, tokens)
         loss = F.cross_entropy(outputs.view(-1, outputs.size(-1)), target_ids.view(-1), reduction='none')
+        loss = loss.view(target_ids.size(0), -1) * target_masks
         loss = loss.sum() / target_ids.size(0)
+        return preds, targets, target_masks, loss
+
+    def compute_step_stats(self, batch, stage):
+        preds, targets, target_masks, loss = self.get_training_outputs(batch)
         pred_num, gold_num, correct_num = self.get_f1_stats(preds, targets)
         recall, precision, f1_score = self.get_f1_score(pred_num, gold_num, correct_num)
 
@@ -136,20 +145,6 @@ class Seq2SeqNREModule(LightningModule):
         }
 
         self.log_dict(logs)
-
-    def training_step(self, batch):
-        logs = self.compute_step_stats(batch, 'train')
-        return logs
-
-    def training_epoch_end(self, outputs):
-        self.compute_epoch_states(outputs, 'train')
-
-    def validation_step(self, batch, batch_idx):
-        logs = self.compute_step_stats(batch, 'val')
-        return logs
-
-    def validation_epoch_end(self, outputs):
-        self.compute_epoch_states(outputs, 'val')
 
 
 class PTRDecoder(nn.Module):

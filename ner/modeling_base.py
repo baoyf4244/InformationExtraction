@@ -1,6 +1,6 @@
 import torch
 import transformers
-from module import Vocab, LabelVocab, IEModule
+from module import Vocab, EntityLabelVocab, IEModule
 from collections import defaultdict
 from transformers import AutoModel, AutoConfig
 
@@ -9,7 +9,7 @@ class NERModule(IEModule):
     def __init__(self, vocab_file, label_file):
         super(NERModule, self).__init__()
         self.vocab = Vocab(vocab_file)
-        self.label_vocab = LabelVocab(label_file)
+        self.label_vocab = EntityLabelVocab(label_file)
         self.vocab_size = self.vocab.get_vocab_size()
         self.num_labels = self.label_vocab.get_vocab_size()
 
