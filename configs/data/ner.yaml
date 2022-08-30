@@ -1,9 +1,0 @@
-data:
-  class_path: ner.NERDataModule
-  init_args:
-    data_dir: data/ner
-    max_len: 200
-    batch_size: 16
-    model_name: BiLSTM-CRF
-    tag_file: data/ner/idx2tag.json
-    pretrained_model_name: bert-base-chinese
