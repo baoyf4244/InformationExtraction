@@ -1,0 +1,9 @@
+data:
+  class_path: ner.MRCNERDataModule
+  init_args:
+    pretrained_model_name: bert-base-chinese
+    label_file: data/ner/labels.txt
+    question_file: data/ner/questions.txt
+    batch_size: 4
+    max_len: 200
+    data_dir: data

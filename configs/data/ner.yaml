@@ -1,5 +1,5 @@
 data:
-  class_path: ner.datasets.NERDataModule
+  class_path: ner.NERDataModule
   init_args:
     data_dir: data/ner
     max_len: 200

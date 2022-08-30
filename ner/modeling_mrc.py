@@ -2,10 +2,10 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from layers import MultiNonLinearLayer
-from ner.modeling_base import BertBasedModule
+from module import PreTrainBasedModule
 
 
-class MRCNERModule(BertBasedModule):
+class MRCNERModule(PreTrainBasedModule):
     def __init__(self, *args, **kwargs):
         super(MRCNERModule, self).__init__(*args, **kwargs)
         self.start = nn.Linear(self.config.hidden_size, 1)
@@ -50,8 +50,8 @@ class MRCNERModule(BertBasedModule):
         end_preds = end_preds.bool()
 
         span_preds = (span_preds
-                      & start_preds.unsqueeze(-1).expand(-1, -1, seq_len)
-                      & end_preds.unsqueeze(1).expand(-1, seq_len, -1))
+                      & start_preds.expand(-1, -1, seq_len)
+                      & end_preds.expand(-1, seq_len, -1))
         span_label_mask = (start_masks.unsqueeze(-1).expand(-1, -1, seq_len)
                            & end_masks.unsqueeze(1).expand(-1, seq_len, -1))
         span_label_mask = torch.triu(span_label_mask, 0)  # start should be less or equal to end
@@ -74,7 +74,7 @@ class MRCNERModule(BertBasedModule):
         return tp, fp, fn
 
     def get_training_outputs(self, batch):
-        input_ids, attention_mask, token_type_ids, start_labels, end_labels, span_labels = batch
+        ids, tokens, attention_mask, input_ids, token_type_ids, start_labels, end_labels, span_labels = batch
         masks = torch.logical_and(attention_mask, token_type_ids)
 
         start_logits, end_logits, span_logits = self(input_ids, attention_mask, token_type_ids)

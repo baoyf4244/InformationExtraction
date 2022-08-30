@@ -72,7 +72,7 @@ class MRCNERDataSet(IEDataSet):
         dataset = []
         context_tokens = self.tokenizer.tokenize(line['text'])
         for label, question in self.label_question_mapping.items():
-            token_type_ids = [0] * (len(question) + 2) + [1] * len(context_tokens)
+            token_type_ids = [0] * (len(question) + 2) + [1] * (len(context_tokens) + 1)
             tokens = question + ['[SEP]'] + context_tokens
             tokens = ['[CLS]'] + tokens[: self.max_len - 2] + ['[SEP]']
             start_labels = [0] * len(tokens)
@@ -142,10 +142,10 @@ class MRCNERDataModule(IEDataModule):
 
 
 if __name__ == '__main__':
-    filename = 'C:/Users/ML-YX01/code/InformationExtraction/data/test.txt'
+    filename = '/data/ner/test.txt'
     tag_filename = 'C:/Users/ML-YX01/code/InformationExtraction/data/ner/labels.txt'
     question = 'C:/Users/ML-YX01/code/InformationExtraction/data/ner/questions.txt'
-    vocab_file = 'C:/Users/ML-YX01/code/InformationExtraction/data/vocab.txt'
+    vocab_file = '/data/ner/vocab.txt'
     # vocab = Vocab('C:/Users/ML-YX01/code/InformationExtraction/data/vocab.txt')
     # label_vocab = LabelVocab('C:/Users/ML-YX01/code/InformationExtraction/data/tags.txt')
 

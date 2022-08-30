@@ -1,15 +1,22 @@
 import torch
 import transformers
-from module import IEModule
+from module import Vocab, LabelVocab, IEModule
 from collections import defaultdict
 from transformers import AutoModel, AutoConfig
 
 
 class NERModule(IEModule):
+    def __init__(self, vocab_file, label_file):
+        super(NERModule, self).__init__()
+        self.vocab = Vocab(vocab_file)
+        self.label_vocab = LabelVocab(label_file)
+        self.vocab_size = self.vocab.get_vocab_size()
+        self.num_labels = self.label_vocab.get_vocab_size()
+
     def get_f1_stats(self, preds, targets, masks=None):
         tp, fp, fn = 0, 0, 0
         pred_chunks = self.get_batch_ner_chunks(preds, masks)
-        target_chunks = self.get_ner_chunks(targets, masks)
+        target_chunks = self.get_batch_ner_chunks(targets, masks)
         for pred_chunk, target_chunk in zip(pred_chunks, target_chunks):
             for label, indices in target_chunk.items():
                 pred_indices = pred_chunk[label]
@@ -44,7 +51,11 @@ class NERModule(IEModule):
             seq_len = masks.sum()
         else:
             seq_len = sum(masks)
-        tags = [self.idx2tag[tag_id] for tag_id in tag_ids]
+
+        for tag_id in tag_ids:
+            if isinstance(tag_id, list):
+                print(tag_ids)
+        tags = [self.label_vocab.convert_id_to_token(tag_id) for tag_id in tag_ids]
         chunks = defaultdict(set)
         i = 0
         while i < seq_len:
@@ -60,47 +71,8 @@ class NERModule(IEModule):
 
         return chunks
 
+    def get_training_outputs(self, batch):
+        _, _, masks, input_ids, targets = batch
+        preds, loss = self(input_ids, targets, masks)
+        return preds, targets, masks, loss
 
-class BertBasedModule(NERModule):
-    def __init__(
-            self,
-            pretrained_model_name: str = 'bert-base-chinese',
-            warmup_steps: int = 1000,
-            num_total_steps: int = 270000
-    ):
-        super(BertBasedModule, self).__init__()
-        self.warmup_steps = warmup_steps
-        self.num_total_steps = num_total_steps
-        self.config = self.get_config(pretrained_model_name)
-        self.pretrained_model = self.get_pretrained_model(pretrained_model_name)
-
-    @staticmethod
-    def get_config(pretrained_model_name):
-        return AutoConfig.from_pretrained(pretrained_model_name)
-
-    @staticmethod
-    def get_pretrained_model(pretrained_model_name):
-        return AutoModel.from_pretrained(pretrained_model_name)
-
-    def configure_optimizers(self):
-        no_decay = ["bias", "LayerNorm.weight"]
-        optimizer_grouped_parameters = [
-            {
-                "params": [p for n, p in self.named_parameters() if not any(nd in n for nd in no_decay)],
-                "weight_decay": 0.01,
-            },
-            {
-                "params": [p for n, p in self.named_parameters() if any(nd in n for nd in no_decay)],
-                "weight_decay": 0.0,
-            },
-        ]
-
-        optim = torch.optim.AdamW(optimizer_grouped_parameters,
-                                  2e-5,
-                                  (0.9, 0.98),
-                                  1e-8,
-                                  0.01)
-
-        lr = transformers.get_polynomial_decay_schedule_with_warmup(optim, self.warmup_steps,
-                                                                    self.num_total_steps, lr_end=2e-5 / 5)
-        return [optim], [lr]

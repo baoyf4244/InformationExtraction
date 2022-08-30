@@ -1,0 +1,8 @@
+data:
+  class_path: ner.FlatNERDataModule
+  init_args:
+    vocab_file: data/vocab.txt
+    label_file: data/tags.txt
+    batch_size: 16
+    max_len: 200
+    data_dir: data

@@ -1,7 +1,7 @@
-import json
 import os
-import utils
+import json
 import torch
+import transformers
 from enum import Enum
 from typing import Optional
 from torch.utils.data import Dataset, DataLoader, random_split
@@ -20,9 +20,7 @@ class IEModule(LightningModule):
         return recall, precision, f1
 
     def get_training_outputs(self, batch):
-        input_ids, targets, masks = batch
-        preds, loss = self(input_ids, targets, masks)
-        return preds, targets, masks, loss
+        raise NotImplementedError
 
     def compute_step_states(self, batch, stage):
         preds, targets, masks, loss = self.get_training_outputs(batch)
@@ -86,6 +84,57 @@ class IEModule(LightningModule):
 
     def test_epoch_end(self, outputs):
         self.compute_epoch_states(outputs, stage='test')
+
+
+class PreTrainBasedModule(IEModule):
+    def __init__(
+            self,
+            warmup_steps: int = 1000,
+            num_total_steps: int = 270000,
+            pretrained_model_name: str = 'bert-base-chinese'
+    ):
+        super(PreTrainBasedModule, self).__init__()
+        self.warmup_steps = warmup_steps
+        self.num_total_steps = num_total_steps
+        self.config = self.get_config(pretrained_model_name)
+        self.pretrained_model = self.get_pretrained_model(pretrained_model_name)
+
+    @staticmethod
+    def get_config(pretrained_model_name):
+        return transformers.AutoConfig.from_pretrained(pretrained_model_name)
+
+    @staticmethod
+    def get_pretrained_model(pretrained_model_name):
+        return transformers.AutoModel.from_pretrained(pretrained_model_name)
+
+    def get_f1_stats(self, preds, targets, masks=None):
+        pass
+
+    def get_training_outputs(self, batch):
+        pass
+
+    def configure_optimizers(self):
+        no_decay = ["bias", "LayerNorm.weight"]
+        optimizer_grouped_parameters = [
+            {
+                "params": [p for n, p in self.named_parameters() if not any(nd in n for nd in no_decay)],
+                "weight_decay": 0.01,
+            },
+            {
+                "params": [p for n, p in self.named_parameters() if any(nd in n for nd in no_decay)],
+                "weight_decay": 0.0,
+            },
+        ]
+
+        optim = torch.optim.AdamW(optimizer_grouped_parameters,
+                                  2e-5,
+                                  (0.9, 0.98),
+                                  1e-8,
+                                  0.01)
+
+        lr = transformers.get_polynomial_decay_schedule_with_warmup(optim, self.warmup_steps,
+                                                                    self.num_total_steps, lr_end=2e-5 / 5)
+        return [optim], [lr]
 
 
 class IEDataModule(LightningDataModule):

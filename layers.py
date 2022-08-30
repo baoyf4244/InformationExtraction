@@ -68,7 +68,7 @@ class MultiHeadAttention(nn.Module):
         :param key: [batch_size, seq_len, hidden_size]
         :param value: [batch_size, seq_len, hidden_size]
         :param masks: [batch_size, seq_len]
-        :param inference: bool, ner(bilstm-lan.yaml)的解码层需要设为True， 其他场景一律设为False
+        :param inference: bool, ner(flat.yaml)的解码层需要设为True， 其他场景一律设为False
         :return:
         """
         # [batch_size, seq_len, hidden_size]  [batch_size, num_labels, hidden_size]

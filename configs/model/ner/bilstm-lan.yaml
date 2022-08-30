@@ -1,9 +1,9 @@
 model:
-  class_path: ner.models.BiLSTMLanNERModule
+  class_path: ner.BiLSTMLanNERModule
   init_args:
     embedding_size: 200
     hidden_size: 400
-    vocab_size: 21128
     num_heads: 4
     num_layers: 4
-    tag_file: data/ner/idx2tag.json
+    vocab_file: data/vocab.txt
+    label_file: data/tags.txt

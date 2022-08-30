@@ -3,9 +3,9 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
-from module import LabelVocab
+from module import Vocab, LabelVocab
 from layers import MultiHeadAttention
-from modeling_base import NERModule
+from ner.modeling_base import NERModule
 from torchcrf import CRF
 
 
@@ -26,19 +26,17 @@ class BiLSTMLan(nn.Module):
 
 
 class BiLSTMLanNERModule(NERModule):
-    def __init__(self,
-                 embedding_size: int = 128,
-                 hidden_size: int = 128,
-                 vocab_size: int = 21128,
-                 num_heads: int = 4,
-                 num_layers: int = 2,
-                 label_file: str = 'data/tags.json'
-                 ):
-        super(BiLSTMLanNERModule, self).__init__()
-        self.label_vocab = LabelVocab(label_file)
-        self.num_labels = self.label_vocab.get_vocab_size()
-        self.embeddings = nn.Embedding(vocab_size, embedding_size)
-        self.label_embeddings = nn.Embedding(len(self.idx2tag), hidden_size)
+    def __init__(
+            self,
+            embedding_size: int = 128,
+            hidden_size: int = 128,
+            num_heads: int = 4,
+            num_layers: int = 2,
+            *args, **kwargs
+    ):
+        super(BiLSTMLanNERModule, self).__init__(*args, **kwargs)
+        self.embeddings = nn.Embedding(self.vocab_size, embedding_size)
+        self.label_embeddings = nn.Embedding(self.num_labels, hidden_size)
         label_ids = torch.arange(0, self.num_labels, dtype=torch.int64).unsqueeze(0)
         self.register_buffer('label_ids', label_ids)
         self.models = nn.ModuleList([BiLSTMLan(embedding_size, hidden_size, num_heads)])
@@ -72,22 +70,18 @@ class BiLSTMLanNERModule(NERModule):
 
 
 class BiLSTMCrfNERModule(NERModule):
-    def __init__(self,
-                 embedding_size: int = 128,
-                 hidden_size: int = 128,
-                 vocab_size: int = 21128,
-                 num_layers: int = 2,
-                 tag_file: str = 'data/tags.json'
-                 ):
-        super(BiLSTMCrfNERModule, self).__init__()
-        with open(tag_file, encoding='utf-8') as f:
-            self.idx2tag = json.load(f)
-            self.idx2tag = {int(key): value for key, value in self.idx2tag.items()}
-        self.num_labels = len(self.idx2tag)
-        self.embeddings = nn.Embedding(vocab_size, embedding_size)
+    def __init__(
+            self,
+            embedding_size: int = 128,
+            hidden_size: int = 128,
+            num_layers: int = 2,
+            *args, **kwargs
+    ):
+        super(BiLSTMCrfNERModule, self).__init__(*args, **kwargs)
+        self.embeddings = nn.Embedding(self.vocab_size, embedding_size)
         self.lstm = nn.LSTM(embedding_size, hidden_size, bidirectional=True, num_layers=num_layers, batch_first=True)
-        self.linear = nn.Linear(hidden_size * 2, len(self.idx2tag))
-        self.crf = CRF(len(self.idx2tag), batch_first=True)
+        self.linear = nn.Linear(hidden_size * 2, self.num_labels)
+        self.crf = CRF(self.num_labels, batch_first=True)
         self.save_hyperparameters()
 
     def forward(self, input_ids, tag_ids=None, masks=None):
