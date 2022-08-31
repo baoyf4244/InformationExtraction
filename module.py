@@ -4,6 +4,7 @@ import torch
 import transformers
 from enum import Enum
 from typing import Optional
+from collections import Counter
 from torch.utils.data import Dataset, DataLoader, random_split
 from pytorch_lightning import LightningModule, LightningDataModule
 
@@ -22,7 +23,7 @@ class IEModule(LightningModule):
     def get_training_outputs(self, batch):
         raise NotImplementedError
 
-    def compute_step_states(self, batch, stage):
+    def compute_step_stats(self, batch, stage):
         preds, targets, masks, loss = self.get_training_outputs(batch)
         tp, fp, fn = self.get_f1_stats(preds, targets, masks)
         recall, precision, f1 = self.get_f1_score(tp, fp, fn)
@@ -44,7 +45,7 @@ class IEModule(LightningModule):
 
         return logs
 
-    def compute_epoch_states(self, outputs, stage='val'):
+    def compute_epoch_stats(self, outputs, stage='val'):
         tps = torch.Tensor([output[stage + '_tp'] for output in outputs]).sum()
         fps = torch.Tensor([output[stage + '_fp'] for output in outputs]).sum()
         fns = torch.Tensor([output[stage + '_fn'] for output in outputs]).sum()
@@ -65,25 +66,25 @@ class IEModule(LightningModule):
         self.log_dict(logs)
 
     def training_step(self, batch, batch_idx):
-        logs = self.compute_step_states(batch, stage='train')
+        logs = self.compute_step_stats(batch, stage='train')
         return logs
 
     def training_epoch_end(self, outputs):
-        self.compute_epoch_states(outputs, stage='train')
+        self.compute_epoch_stats(outputs, stage='train')
 
     def validation_step(self, batch, batch_idx):
-        logs = self.compute_step_states(batch, stage='val')
+        logs = self.compute_step_stats(batch, stage='val')
         return logs
 
     def validation_epoch_end(self, outputs):
-        self.compute_epoch_states(outputs, stage='val')
+        self.compute_epoch_stats(outputs, stage='val')
 
     def test_step(self, batch, batch_idx):
-        logs = self.compute_step_states(batch, stage='test')
+        logs = self.compute_step_stats(batch, stage='test')
         return logs
 
     def test_epoch_end(self, outputs):
-        self.compute_epoch_states(outputs, stage='test')
+        self.compute_epoch_stats(outputs, stage='test')
 
 
 class PreTrainBasedModule(IEModule):
@@ -154,6 +155,10 @@ class IEDataModule(LightningDataModule):
         self.max_len = max_len
         self.batch_size = batch_size
         self.data_dir = data_dir
+        self.train_file = os.path.join(self.data_dir, 'train.txt')
+        self.val_file = os.path.join(self.data_dir, 'dev.txt')
+        self.test_file = os.path.join(self.data_dir, 'test.txt')
+        self.predict_file = os.path.join(self.data_dir, 'predict.txt')
         self.train_dataset = None
         self.val_dataset = None
         self.test_dataset = None
@@ -178,14 +183,10 @@ class IEDataModule(LightningDataModule):
         return [b[name] for b in batch]
 
     def setup(self, stage: Optional[str] = None) -> None:
-        train_file = os.path.join(self.data_dir, 'train.txt')
-        val_file = os.path.join(self.data_dir, 'dev.txt')
-        test_file = os.path.join(self.data_dir, 'test.txt')
-        predict_file = os.path.join(self.data_dir, 'predict.txt')
         if stage == 'fit' or stage is None:
-            self.train_dataset = self.get_dataset(train_file)
-            if os.path.isfile(val_file):
-                self.val_dataset = self.get_dataset(val_file)
+            self.train_dataset = self.get_dataset(self.train_file)
+            if os.path.isfile(self.val_file):
+                self.val_dataset = self.get_dataset(self.val_file)
             else:
                 data_size = len(self.train_dataset)
                 train_size = int(data_size * 0.8)
@@ -193,11 +194,11 @@ class IEDataModule(LightningDataModule):
                 self.train_dataset, self.val_dataset = random_split(self.train_dataset, [train_size, val_size])
 
         if stage == 'test' or stage is None:
-            if os.path.isfile(test_file):
-                self.test_dataset = self.get_dataset(test_file)
+            if os.path.isfile(self.test_file):
+                self.test_dataset = self.get_dataset(self.test_file)
 
         if stage == 'predict' or stage is None:
-            self.predict_dataset = self.get_dataset(predict_file, True)
+            self.predict_dataset = self.get_dataset(self.predict_file, True)
 
     def train_dataloader(self):
         return DataLoader(self.train_dataset, self.batch_size, collate_fn=self.collocate_fn)
@@ -284,6 +285,34 @@ class LabelVocab:
 
 
 class Vocab(LabelVocab):
+    def __init__(self, data_file=None, min_freq=10, do_lower=False, *args, **kwargs):
+        self.data_file = data_file
+        self.min_freq = min_freq
+        self.do_lower = do_lower
+        super(Vocab, self).__init__(*args, **kwargs)
+
+    def load_vocab(self):
+        try:
+            return super(Vocab, self).load_vocab()
+        except Exception:
+            assert self.data_file is not None, 'vocab.txt不存在或不完整时，数据文件不能为空'
+            counter = Counter()
+            with open(self.data_file, encoding='utf-8') as f:
+                for line in f:
+                    line = json.loads(line)
+                    tokens = self.tokenize(line['text'])
+                    counter.update(tokens)
+
+            vocab = []
+            with open(self.vocab_file, 'w', encoding='utf-8') as f:
+                for key, freq in counter.items():
+                    if freq >= self.min_freq and key not in self.get_special_tokens():
+                        vocab.append(key)
+                        f.write(key + '\n')
+
+            vocab = self.get_special_tokens() + vocab
+            return vocab
+
     @staticmethod
     def get_special_tokens():
         return [SpecialTokens.PAD.value, SpecialTokens.UNK.value]
@@ -299,11 +328,49 @@ class Vocab(LabelVocab):
         return self.word2idx[SpecialTokens.UNK.value]
 
     @staticmethod
-    def get_unk_token(self):
+    def get_unk_token():
         return SpecialTokens.UNK.value
 
+    def tokenize_chinese_chars(self, text):
+        """Adds whitespace around any CJK character."""
+        output = []
+        for char in text:
+            cp = ord(char)
+            if self.is_chinese_char(cp):
+                output.append(" ")
+                output.append(char)
+                output.append(" ")
+            else:
+                output.append(char)
+        return "".join(output).strip().split()
+
+    @staticmethod
+    def is_chinese_char(cp):
+        """Checks whether CP is the codepoint of a CJK character."""
+        # This defines a "chinese character" as anything in the CJK Unicode block:
+        #   https://en.wikipedia.org/wiki/CJK_Unified_Ideographs_(Unicode_block)
+        #
+        # Note that the CJK Unicode block is NOT all Japanese and Korean characters,
+        # despite its name. The modern Korean Hangul alphabet is a different block,
+        # as is Japanese Hiragana and Katakana. Those alphabets are used to write
+        # space-separated words, so they are not treated specially and handled
+        # like the all of the other languages.
+        if ((0x4E00 <= cp <= 0x9FFF) or  #
+                (0x3400 <= cp <= 0x4DBF) or  #
+                (0x20000 <= cp <= 0x2A6DF) or  #
+                (0x2A700 <= cp <= 0x2B73F) or  #
+                (0x2B740 <= cp <= 0x2B81F) or  #
+                (0x2B820 <= cp <= 0x2CEAF) or
+                (0xF900 <= cp <= 0xFAFF) or  #
+                (0x2F800 <= cp <= 0x2FA1F)):  #
+            return True
+
+        return False
+
     def tokenize(self, text):
-        return text.split()
+        if self.do_lower:
+            text = text.lower()
+        return self.tokenize_chinese_chars(text)
 
     def convert_token_to_id(self, token):
         return self.word2idx[token] if token in self.word2idx else self.word2idx[SpecialTokens.UNK.value]
@@ -312,7 +379,7 @@ class Vocab(LabelVocab):
 class Seq2SeqVocab(Vocab):
     @staticmethod
     def get_special_tokens():
-        return super().get_special_tokens() + [SpecialTokens.SOS.value, SpecialTokens.EOS.value]
+        return Vocab.get_special_tokens() + [SpecialTokens.SOS.value, SpecialTokens.EOS.value]
 
     def get_start_id(self):
         return self.word2idx[SpecialTokens.SOS.value]
@@ -338,3 +405,8 @@ class SpecialTokens(Enum):
     SEMICOLON = ';'
     NON_ENTITY = 'O'
 
+
+if __name__ == '__main__':
+    vocab = Vocab(vocab_file='data/kpe/vocab.txt', data_file='data/kpe/train.txt')
+    tokens = vocab.tokenize('then terrorism struck again , this time in the indonesia capital of jakarta .')
+    print(tokens)

@@ -104,6 +104,7 @@ class MultiHeadAttention(nn.Module):
 class Encoder(nn.Module):
     def __init__(self, input_size, hidden_size, num_layers, bidirectional=True):
         super(Encoder, self).__init__()
+        assert hidden_size % 2 == 0, '双向LSTM的输出维度必须为偶数'
         self.lstm = nn.LSTM(input_size, hidden_size // 2, num_layers, batch_first=True, bidirectional=bidirectional)
 
     def forward(self, inputs):
@@ -122,7 +123,7 @@ class Decoder(nn.Module):
         """
         super(Decoder, self).__init__()
         self.lstm = nn.LSTMCell(input_size + hidden_size, hidden_size)
-        self.att = BahdanauAttention(hidden_size, hidden_size)
+        self.att = BahdanauAttention(hidden_size, hidden_size, hidden_size)
         self.decoder = nn.Linear(hidden_size, vocab_size)
 
     def forward(self, encoder_outputs, encoder_masks, decoder_input, decode_hidden):
@@ -148,27 +149,47 @@ class Decoder(nn.Module):
 
 
 class BahdanauAttention(nn.Module):
-    def __init__(self, input_size, hidden_size):
+    def __init__(self, query_input_size, key_input_size, hidden_size, is_coverage=False):
         super(BahdanauAttention, self).__init__()
-        self.key = nn.Linear(input_size, hidden_size)
-        self.query = nn.Linear(input_size, hidden_size)
+        self.is_coverage = is_coverage
+        self.key = nn.Linear(key_input_size, hidden_size)
+        self.query = nn.Linear(query_input_size, hidden_size)
+
+        if self.is_coverage:
+            self.memery = nn.Linear(1, hidden_size)
+
         self.attention = nn.Linear(hidden_size, 1)
 
-    def forward(self, query, key, masks):
+    def forward(self, query, key, masks, coverage_inputs=None):
+        """
+
+        Args:
+            key: [bs, ts, ehs]
+            query: [bs, dhs]
+            masks: [bs, ts]
+            coverage_inputs: [bs, ts]
+        Returns:
+
+        """
         if query.dim() == 2:
             query = torch.unsqueeze(query, 1).expand(-1, key.size(1), -1)
+
+        if torch.sum(masks[:, 0]).item() > 0:
+            masks = torch.logical_not(masks)
 
         query_proj = self.query(query)
         key_proj = self.key(key)
 
-        score = self.attention(torch.tanh(query_proj + key_proj))  # [bs, ts, 1]
-        score = torch.squeeze(score)
+        if self.is_coverage and coverage_inputs is not None:
+            memery = self.memery(coverage_inputs.unsqueeze(-1))
+            score = self.attention(F.tanh(query + key + memery))  # [bs, ts, 1]
+        else:
+            score = self.attention(torch.tanh(query_proj + key_proj))  # [bs, ts, 1]
+
+        score = torch.squeeze(score, -1)
         score = torch.masked_fill(score, masks, float('-inf'))
         score = F.softmax(score, -1)  # [bs, ts]
 
-        outputs = torch.bmm(torch.unsqueeze(score, 1), key).squeeze()  # [bs, input_size]
-        return outputs, score
-
-
-
+        outputs = torch.bmm(torch.unsqueeze(score, 1), key).squeeze(1)  # [bs, key_input_size]
+        return outputs, score  # [bs, key_input_size], [bs, ts]
 

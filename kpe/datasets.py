@@ -41,13 +41,19 @@ class KPEDataSet(IEDataSet):
 
 
 class KPEDataModule(IEDataModule):
-    def __init__(self, vocab_file: str = 'data/kpe/vocab.txt', *args, **kwargs):
+    def __init__(
+            self,
+            vocab_file: str = 'data/kpe/vocab.txt',
+            min_freq: int = 10,
+            do_lower: bool = False,
+            *args, **kwargs
+    ):
         """
         Args:
             vocab_file:
         """
         super(KPEDataModule, self).__init__(*args, **kwargs)
-        self.vocab = KPESeq2SeqVocab(vocab_file)
+        self.vocab = KPESeq2SeqVocab(vocab_file=vocab_file, data_file=self.train_file, min_freq=min_freq, do_lower=do_lower)
         self.save_hyperparameters()
 
     def get_dataset(self, data_file, is_predict=False):

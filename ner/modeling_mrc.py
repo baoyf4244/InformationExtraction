@@ -81,7 +81,7 @@ class MRCNERModule(PreTrainBasedModule):
         span_preds = self.get_spans(start_logits, end_logits, span_logits, masks)
         return span_preds, span_labels, masks, start_logits, end_logits, span_logits, start_labels, end_labels
 
-    def compute_step_states(self, batch, stage):
+    def compute_step_stats(self, batch, stage):
         span_preds, span_labels, masks, start_logits, end_logits, span_logits, start_labels, end_labels = self.get_training_outputs(batch)
 
         start_logits = start_logits.squeeze(-1)

@@ -34,7 +34,7 @@ class Seq2SeqNREModule(IEModule):
         self.log_dict(logs, prog_bar=True)
         return logs
 
-    def compute_epoch_states(self, outputs, stage='val'):
+    def compute_epoch_stats(self, outputs, stage='val'):
         pred_num = torch.Tensor([output[stage + '_pred_num'] for output in outputs]).sum()
         gold_num = torch.Tensor([output[stage + '_gold_num'] for output in outputs]).sum()
         correct_num = torch.Tensor([output[stage + '_correct_num'] for output in outputs]).sum()
@@ -62,15 +62,15 @@ class Seq2SeqNREModule(IEModule):
 
 
 class Seq2SeqWDNREModule(Seq2SeqNREModule):
-    def __init__(self, vocab_file, label_file, embedding_size, hidden_size, num_layers, decoder_max_steps):
+    def __init__(self, vocab_file, label_file, do_lower, embedding_size, hidden_size, num_layers, decoder_max_steps):
         super(Seq2SeqWDNREModule, self).__init__()
         self.label_vocab = LabelVocab(label_file)
-        self.vocab = WDVocab(self.label_vocab, vocab_file=vocab_file)
+        self.vocab = WDVocab(self.label_vocab, vocab_file=vocab_file, do_lower=do_lower)
 
         self.decoder_max_steps = decoder_max_steps
-        self.embedding = nn.Embedding(self.tokenizer.get_vocab_size(), embedding_size)
+        self.embedding = nn.Embedding(self.vocab.get_vocab_size(), embedding_size)
         self.encoder = Encoder(embedding_size, hidden_size, num_layers)
-        self.decoder = Decoder(embedding_size, hidden_size, self.tokenizer.get_vocab_size())
+        self.decoder = Decoder(embedding_size, hidden_size, self.vocab.get_vocab_size())
 
         self.register_buffer('h0', torch.zeros(1, hidden_size, dtype=torch.float))
         self.register_buffer('c0', torch.zeros(1, hidden_size, dtype=torch.float))
@@ -108,16 +108,16 @@ class Seq2SeqWDNREModule(Seq2SeqNREModule):
     def get_results(self, pred_ids, att_scores, tokens):
         preds = []
         for i, pred_id in enumerate(pred_ids):
-            if pred_id.item() == self.tokenizer.get_end_id():
+            if pred_id.item() == self.vocab.get_end_id():
                 break
 
-            if pred_id.item() == self.tokenizer.get_unk_id():
+            if pred_id.item() == self.vocab.get_unk_id():
                 if att_scores[i] < len(tokens):
                     pred = tokens[att_scores[i]]
                 else:
-                    pred = self.tokenizer.get_pad_token()
+                    pred = self.vocab.get_pad_token()
             else:
-                pred = self.tokenizer.convert_id_to_token(pred_id)
+                pred = self.vocab.convert_id_to_token(pred_id)
 
             preds.append(pred)
         return preds
@@ -154,16 +154,25 @@ class Seq2SeqWDNREModule(Seq2SeqNREModule):
 
 
 class Seq2SeqPTRNREModule(Seq2SeqNREModule):
-    def __init__(self, vocab_file, label_file, embedding_size, hidden_size, num_layers, max_decoder_step):
+    def __init__(
+            self,
+            vocab_file,
+            label_file,
+            do_lower,
+            embedding_size,
+            hidden_size,
+            num_layers,
+            max_decoder_step
+    ):
         super(Seq2SeqPTRNREModule, self).__init__()
-        self.vocab = Vocab(vocab_file)
+        self.vocab = Vocab(vocab_file=vocab_file, do_lower=do_lower)
         self.label_vocab = PTRLabelVocab(label_file)
 
         self.max_decode_step = max_decoder_step
-        self.embedding = nn.Embedding(self.tokenizer.get_vocab_size(), embedding_size)
-        self.label_embedding = nn.Embedding(len(self.relations), embedding_size)
+        self.embedding = nn.Embedding(self.vocab.get_vocab_size(), embedding_size)
+        self.label_embedding = nn.Embedding(self.label_vocab.get_vocab_size(), embedding_size)
         self.encoder = Encoder(embedding_size, hidden_size, num_layers)
-        self.decoder = PTRDecoder(hidden_size, hidden_size, num_layers, len(self.relations))
+        self.decoder = PTRDecoder(hidden_size, hidden_size, num_layers, self.label_vocab.get_vocab_size())
         self.linear = nn.Linear(8 * hidden_size + embedding_size, hidden_size)  # 用于 decoder input 降维
 
         self.register_buffer('h0', torch.zeros(1, hidden_size, dtype=torch.float))
@@ -288,7 +297,7 @@ class PTRDecoder(nn.Module):
         """
         super(PTRDecoder, self).__init__()
         self.lstm = nn.LSTMCell(input_size + hidden_size, hidden_size)
-        self.attention = BahdanauAttention(hidden_size, hidden_size)
+        self.attention = BahdanauAttention(hidden_size, hidden_size, hidden_size)
 
         self.head_lstm = nn.LSTM(2 * hidden_size, hidden_size, num_layers, batch_first=True, bidirectional=True)
         self.head_start_cls = nn.Linear(2 * hidden_size, 1)
@@ -303,7 +312,7 @@ class PTRDecoder(nn.Module):
     def forward(self, encoder_outputs, encoder_masks, decoder_input, decoder_hidden):
         att_output, att_scores = self.attention(decoder_input, encoder_outputs, encoder_masks)
         decoder_output, hidden = self.lstm(torch.cat([decoder_input, att_output], -1), decoder_hidden)
-
+        encoder_masks = torch.logical_not(encoder_masks)
         head_inputs = torch.cat([encoder_outputs, decoder_output.unsqueeze(1).repeat(1, encoder_outputs.size(1), 1)], -1)
         head_outputs, _ = self.head_lstm(head_inputs)  # [bs, ts, 2 * hs]
         head_start_logits = self.head_start_cls(head_outputs).squeeze()  # [bs, ts]

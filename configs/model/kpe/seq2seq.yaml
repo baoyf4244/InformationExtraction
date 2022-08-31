@@ -1,5 +1,5 @@
 model:
-  class_path: kpe.models.Seq2SeqKPEModule
+  class_path: kpe.Seq2SeqKPEModule
   init_args:
     embedding_size: 128
     hidden_size: 128
@@ -7,4 +7,5 @@ model:
     decoder_max_steps: 50
     beam_size: 5
     vocab_file: data/kpe/vocab.txt
-    coverage: true
+    do_lower: false
+    is_coverage: true

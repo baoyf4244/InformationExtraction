@@ -6,7 +6,6 @@ from module import Vocab, LabelVocab, IEDataSet, IEDataModule
 class WDNREDataSet(IEDataSet):
     def __init__(self, vocab: WDVocab, *args, **kwargs):
         super(WDNREDataSet, self).__init__(*args, **kwargs)
-        self.data_file = data_file
         self.vocab = vocab
         self.label_vocab = self.vocab.label_vocab
 
@@ -29,7 +28,7 @@ class WDNREDataSet(IEDataSet):
             head_start, head_end, tail_start, tail_end, relation = label.split()
             head = tokens[int(head_start): int(head_end) + 1]
             tail = tokens[int(tail_start): int(tail_end) + 1]
-            target = head + [self.vocab.get_semicolon_token()] + tail + [self.vocab.get_special_tokens()] + [relation]
+            target = head + [self.vocab.get_semicolon_token()] + tail + [self.vocab.get_vertical_token()] + [relation]
             targets.extend(target)
             targets.append(self.vocab.get_vertical_token())
 
@@ -49,16 +48,24 @@ class WDNREDataSet(IEDataSet):
             'vocab_masks': self.get_vocab_masks(token_ids),
             'targets': targets,
             'target_ids': target_ids,
-            'target_masks': [1] * len(token_ids)
+            'target_masks': [1] * len(target_ids)
         }
         return data
 
 
 class WDNREDataModule(IEDataModule):
-    def __init__(self, vocab_file, label_file, *args, **kwargs):
+    def __init__(
+            self,
+            vocab_file: str = 'data/nre/vocab.txt',
+            label_file: str = 'data/nre/relations.txt',
+            min_freq: int = 10,
+            do_lower: bool = False,
+            *args, **kwargs
+    ):
         super(WDNREDataModule, self).__init__(*args, **kwargs)
         self.label_vocab = LabelVocab(label_file)
-        self.vocab = WDVocab(self.label_vocab, vocab_file=vocab_file)
+        self.vocab = WDVocab(self.label_vocab, vocab_file=vocab_file, data_file=self.train_file,
+                             min_freq=min_freq, do_lower=do_lower)
 
     def get_dataset(self, data_file, is_predict=False):
         dataset = WDNREDataSet(self.vocab, data_file=data_file, max_len=self.max_len, is_predict=is_predict)
@@ -81,7 +88,6 @@ class WDNREDataModule(IEDataModule):
 class PTRNREDataSet(IEDataSet):
     def __init__(self, vocab: Vocab, label_vocab: PTRLabelVocab, *args, **kwargs):
         super(PTRNREDataSet, self).__init__(*args, **kwargs)
-        self.data_file = data_file
         self.vocab = vocab
         self.label_vocab = label_vocab
 
@@ -121,6 +127,8 @@ class PTRNREDataModule(IEDataModule):
             self,
             vocab_file: str = 'data/nre/vocab.txt',
             label_file: str = 'data/nre/relations.txt',
+            min_freq: int = 10,
+            do_lower: bool = False,
             *args, **kwargs
     ):
         """
@@ -129,7 +137,7 @@ class PTRNREDataModule(IEDataModule):
             vocab_file:
         """
         super(PTRNREDataModule, self).__init__(*args, **kwargs)
-        self.vocab = Vocab(vocab_file)
+        self.vocab = Vocab(vocab_file=vocab_file, data_file=self.train_file, do_lower=do_lower, min_freq=min_freq)
         self.label_vocab = PTRLabelVocab(label_file)
         self.save_hyperparameters()
 

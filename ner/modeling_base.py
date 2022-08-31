@@ -1,8 +1,7 @@
 import torch
-import transformers
-from module import Vocab, EntityLabelVocab, IEModule
+from ner.vocab import EntityLabelVocab
+from module import Vocab, IEModule
 from collections import defaultdict
-from transformers import AutoModel, AutoConfig
 
 
 class NERModule(IEModule):

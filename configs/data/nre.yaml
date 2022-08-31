@@ -1,9 +1,10 @@
 data:
-  class_path: nre.datasets.NREDataModule
+  class_path: nre.PTRNREDataModule
   init_args:
     data_dir: data/nre
     max_len: 200
     batch_size: 16
-    relation_file: data/nre/relations.txt
     vocab_file: data/nre/vocab.txt
-    model: ptr
+    label_file: data/nre/relations.txt
+    min_freq: 10
+    do_lower: false

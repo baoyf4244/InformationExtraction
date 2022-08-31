@@ -4,40 +4,7 @@ import torch.nn.functional as F
 
 from module import IEModule
 from kpe.vocab import KPESeq2SeqVocab
-
-
-class Encoder(nn.Module):
-    def __init__(self, input_size, hidden_size, num_layers):
-        super(Encoder, self).__init__()
-        assert hidden_size % 2 == 0, '双向LSTM的输出维度必须为偶数'
-        self.lstm = nn.LSTM(input_size, hidden_size // 2, num_layers=num_layers, bidirectional=True, batch_first=True)
-
-    def forward(self, inputs):
-        outputs, hidden = self.lstm(inputs)
-        return outputs, hidden
-
-
-class BahdanauAttention(nn.Module):
-    def __init__(self, query_input_size, key_input_size, hidden_size):
-        super(BahdanauAttention, self).__init__()
-        self.key = nn.Linear(key_input_size, hidden_size)
-        self.query = nn.Linear(query_input_size, hidden_size)
-        self.attention = nn.Linear(hidden_size, 1)
-
-    def forward(self, query, key, masks):
-        if query.dim() == 2:
-            query = torch.unsqueeze(query, 1).expand(-1, key.size(1), -1)
-
-        query_proj = self.query(query)
-        key_proj = self.key(key)
-
-        score = self.attention(torch.tanh(query_proj + key_proj))  # [bs, ts, 1]
-        score = torch.squeeze(score)
-        score = torch.masked_fill(score, masks, float('-inf'))
-        score = F.softmax(score, -1)  # [bs, ts]
-
-        outputs = torch.bmm(torch.unsqueeze(score, 1), key).squeeze()  # [bs, input_size]
-        return outputs, score  # [bs, input_size], [bs, ts]
+from layers import BahdanauAttention, Encoder
 
 
 class PointGeneratorNetWork(nn.Module):
@@ -51,51 +18,13 @@ class PointGeneratorNetWork(nn.Module):
         return torch.sigmoid(outputs)
 
 
-class Coverage(nn.Module):
-    def __init__(self, encoder_hidden_size, decoder_hidden_size, hidden_size):
-        super(Coverage, self).__init__()
-        self.query = nn.Linear(decoder_hidden_size, hidden_size)
-        self.key = nn.Linear(encoder_hidden_size, hidden_size)
-        self.memery = nn.Linear(1, hidden_size)
-        self.coverage = nn.Linear(hidden_size, 1)
-
-    def forward(self, encoder_outputs, decoder_inputs, encoder_masks, coverage_inputs):
-        """
-
-        Args:
-            coverage_inputs: [bs, ts]
-            encoder_outputs: [bs, ts, ehs]
-            decoder_inputs: [bs, dhs]
-            encoder_masks: [bs, ts]  [[0, 0, ... , 1, 1, 1], ..., [...]]
-
-        Returns:
-
-        """
-        _, seq_len, _ = encoder_outputs.size()
-        if decoder_inputs.dim() == 2:
-            decoder_inputs = torch.unsqueeze(decoder_inputs, 1).expand(-1, seq_len, -1)
-
-        query = self.query(decoder_inputs)
-        key = self.key(encoder_outputs)
-        memery = self.memery(coverage_inputs.unsqueeze(-1))
-
-        coverage_scores = self.coverage(F.tanh(query + key + memery)).squeeze(-1)  # [bs, ts]
-        coverage_scores = torch.masked_fill(coverage_scores, encoder_masks, float('-inf'))
-        coverage_scores = F.softmax(coverage_scores, -1)
-        coverage_outputs = torch.bmm(coverage_scores.unsqueeze(1), encoder_outputs)  # [bs, 1, ehs]
-        return coverage_outputs.squeeze(1), coverage_scores
-
-
 class Decoder(nn.Module):
     def __init__(self, encoder_hidden_size, decoder_input_size, decoder_hidden_size, attention_hidden_size,
-                 coverage=True):
+                 is_coverage=True):
         super(Decoder, self).__init__()
-        self.coverage = coverage
+        self.is_coverage = is_coverage
         self.lstm = nn.LSTMCell(decoder_input_size + encoder_hidden_size, decoder_hidden_size)
-        if coverage:
-            self.attention = Coverage(encoder_hidden_size, decoder_hidden_size, attention_hidden_size)
-        else:
-            self.attention = BahdanauAttention(decoder_hidden_size, encoder_hidden_size, attention_hidden_size)
+        self.attention = BahdanauAttention(decoder_hidden_size, encoder_hidden_size, attention_hidden_size, self.is_coverage)
 
     def forward(self, encoder_outputs, decoder_input, decoder_hidden, encoder_masks, coverage_inputs=None):
         """
@@ -109,34 +38,40 @@ class Decoder(nn.Module):
         Returns:
 
         """
-        if self.coverage:
-            attention_outputs, attention_scores = self.attention(encoder_outputs, decoder_hidden[0], encoder_masks, coverage_inputs)
-        else:
-            attention_outputs, attention_scores = self.attention(decoder_hidden[0], encoder_outputs, encoder_masks)
+        attention_outputs, attention_scores = self.attention(decoder_hidden[0], encoder_outputs, encoder_masks, coverage_inputs)
         decoder_hidden = self.lstm(torch.cat([attention_outputs, decoder_input], -1), decoder_hidden)
         return decoder_hidden, attention_outputs, attention_scores
 
 
 class Seq2SeqKPEModule(IEModule):
-    def __init__(self, embedding_size, hidden_size, num_layers, decoder_max_steps, beam_size,
-                 vocab_file, coverage=True):
+    def __init__(
+            self,
+            embedding_size: int = 128,
+            hidden_size: int = 128,
+            num_layers: int = 1,
+            decoder_max_steps: int = 20,
+            beam_size: int = 5,
+            vocab_file: str = 'data/kpe/vocab.txt',
+            do_lower: bool = False,
+            is_coverage: bool = True
+    ):
         super(Seq2SeqKPEModule, self).__init__()
-        self.vocab = KPESeq2SeqVocab(vocab_file)
+        self.vocab = KPESeq2SeqVocab(vocab_file=vocab_file, do_lower=do_lower)
 
-        self.coverage = coverage
+        self.is_coverage = is_coverage
         self.beam_size = beam_size
         self.decoder_max_steps = decoder_max_steps
-        self.embedding = nn.Embedding(self.tokenizer.get_vocab_size(), embedding_size)
+        self.embedding = nn.Embedding(self.vocab.get_vocab_size(), embedding_size)
         self.encoder = Encoder(embedding_size, hidden_size, num_layers)
-        self.decoder = Decoder(hidden_size, embedding_size, hidden_size, hidden_size, coverage)
+        self.decoder = Decoder(hidden_size, embedding_size, hidden_size, hidden_size, is_coverage)
         self.pointer = PointGeneratorNetWork(hidden_size, hidden_size, embedding_size)
         self.linear = nn.Sequential(nn.Linear(hidden_size + hidden_size, hidden_size),
-                                    nn.Linear(hidden_size, self.tokenizer.get_vocab_size()))
+                                    nn.Linear(hidden_size, self.vocab.get_vocab_size()))
 
-        if coverage:
+        if is_coverage:
             self.register_buffer('coverage_memery', torch.zeros(1, 1))
 
-        self.register_buffer('start_ids', torch.LongTensor([self.tokenizer.get_start_id()]))
+        self.register_buffer('start_ids', torch.LongTensor([self.vocab.get_start_id()]))
         self.register_buffer('vocab_extended', torch.zeros(1, 1))
 
     def forward(self, input_ids, input_masks, input_vocab_ids, oov_ids, target_ids):
@@ -145,7 +80,7 @@ class Seq2SeqKPEModule(IEModule):
         decoder_hidden = (torch.cat(torch.chunk(encoder_hidden[0], 2, 0), -1).squeeze(0),
                           torch.cat(torch.chunk(encoder_hidden[1], 2, 0), -1).squeeze(0))
 
-        if self.coverage:
+        if self.is_coverage:
             coverage_memery = self.coverage_memery.repeat(input_ids.size())
         else:
             coverage_memery = None
@@ -179,11 +114,10 @@ class Seq2SeqKPEModule(IEModule):
         Returns:
 
         """
-        encoder_masks = torch.logical_not(encoder_masks)
         decoder_input = self.embedding(decoder_input_ids)
         decoder_hidden, attention_output, attention_scores = self.decoder(encoder_outputs, decoder_input,
                                                                           decoder_hidden, encoder_masks, coverage_memery)
-        if self.coverage:
+        if self.is_coverage:
             coverage_memery = coverage_memery + attention_scores
         p_vocab = self.linear(torch.cat([decoder_hidden[0], attention_output], -1))
         p_vocab = F.softmax(p_vocab, -1)
@@ -203,13 +137,13 @@ class Seq2SeqKPEModule(IEModule):
         # loss = F.cross_entropy(props.view(-1, props.size(-1)), target_ids.view(-1), reduction='none')
         # loss = loss.view(-1, target_ids.size(1)) * target_masks
         loss = loss.sum() / loss.size(0)
-        seqs = self.get_batch_seqs(props, self.tokenizer.get_vocab(), idx2oov)
+        seqs = self.get_batch_seqs(props, self.vocab.get_vocab(), idx2oov)
         return seqs, targets, input_masks, loss
 
     def get_seqs(self, input_ids, idx2word, idx2oov):
         seqs = []
         for input_id in input_ids:
-            if input_id == self.tokenizer.get_end_id():
+            if input_id == self.vocab.get_end_id():
                 break
             seqs.append(idx2word[input_id] if input_id < len(idx2word) else idx2oov[input_id])
 
@@ -228,8 +162,8 @@ class Seq2SeqKPEModule(IEModule):
         gold_num = 0
         correct_num = 0
         for pred, target in zip(preds, targets):
-            pred = ''.join(pred).split('|')
-            target = ''.join(target).split('|')
+            pred = ''.join(pred).split(self.vocab.get_vertical_token())
+            target = ''.join(target).split(self.vocab.get_vertical_token())
             pred_num += len(pred)
             gold_num += len(target)
             correct_num += len((set(pred).intersection(set(target))))
