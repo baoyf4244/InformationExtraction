@@ -1,6 +1,7 @@
 import os
 import json
 import torch
+import functools
 import transformers
 from enum import Enum
 from typing import Optional
@@ -10,6 +11,11 @@ from pytorch_lightning import LightningModule, LightningDataModule
 
 
 class IEModule(LightningModule):
+    def __init__(self, predict_results_file):
+        super(IEModule, self).__init__()
+        self.predict_results_file =predict_results_file
+        self.results = None
+
     def get_f1_stats(self, preds, targets, masks=None):
         raise NotImplementedError
 
@@ -23,8 +29,26 @@ class IEModule(LightningModule):
     def get_training_outputs(self, batch):
         raise NotImplementedError
 
+    def get_validation_outputs(self, batch):
+        self.get_training_outputs(batch)
+
+    def get_predict_outputs(self, batch):
+        raise NotImplementedError
+
+    def get_outputs(self, batch, stage):
+        outputs_fn = {
+            'train': self.get_training_outputs,
+            'val': self.get_validation_outputs,
+            'test': self.get_validation_outputs,
+            'predict': self.get_predict_outputs
+        }
+        if stage not in outputs_fn:
+            raise NotImplementedError
+
+        return outputs_fn[stage](batch)
+
     def compute_step_stats(self, batch, stage):
-        preds, targets, masks, loss = self.get_training_outputs(batch)
+        preds, targets, masks, loss = self.get_outputs(batch, stage)
         tp, fp, fn = self.get_f1_stats(preds, targets, masks)
         recall, precision, f1 = self.get_f1_score(tp, fp, fn)
 
@@ -38,9 +62,6 @@ class IEModule(LightningModule):
             stage + '_precision': precision
         }
 
-        if stage == 'train':
-            logs['loss'] = logs['train_loss']
-            logs['lr'] = self.trainer.optimizers[0].param_groups[0]['lr']
         self.log_dict(logs, prog_bar=True)
 
         return logs
@@ -67,6 +88,8 @@ class IEModule(LightningModule):
 
     def training_step(self, batch, batch_idx):
         logs = self.compute_step_stats(batch, stage='train')
+        logs['loss'] = logs['train_loss']
+        logs['lr'] = self.trainer.optimizers[0].param_groups[0]['lr']
         return logs
 
     def training_epoch_end(self, outputs):
@@ -86,19 +109,31 @@ class IEModule(LightningModule):
     def test_epoch_end(self, outputs):
         self.compute_epoch_stats(outputs, stage='test')
 
+    def on_predict_start(self) -> None:
+        self.results = open(self.predict_results_file, 'w', encoding='utf-8')
+
+    def on_predict_end(self) -> None:
+        self.results.close()
+
 
 class PreTrainBasedModule(IEModule):
     def __init__(
             self,
             warmup_steps: int = 1000,
             num_total_steps: int = 270000,
-            pretrained_model_name: str = 'bert-base-chinese'
+            pretrained_model_name: str = 'bert-base-chinese',
+            *args, **kwargs
     ):
-        super(PreTrainBasedModule, self).__init__()
+        super(PreTrainBasedModule, self).__init__(*args, **kwargs)
         self.warmup_steps = warmup_steps
         self.num_total_steps = num_total_steps
         self.config = self.get_config(pretrained_model_name)
+        self.tokenizer = self.get_tokenizer(pretrained_model_name)
         self.pretrained_model = self.get_pretrained_model(pretrained_model_name)
+
+    @staticmethod
+    def get_tokenizer(pretrained_model_name):
+        return transformers.AutoTokenizer.from_pretrained(pretrained_model_name)
 
     @staticmethod
     def get_config(pretrained_model_name):
@@ -109,10 +144,16 @@ class PreTrainBasedModule(IEModule):
         return transformers.AutoModel.from_pretrained(pretrained_model_name)
 
     def get_f1_stats(self, preds, targets, masks=None):
-        pass
+        raise NotImplementedError
 
     def get_training_outputs(self, batch):
-        pass
+        raise NotImplementedError
+
+    def get_validation_outputs(self, batch):
+        self.get_training_outputs(batch)
+
+    def get_predict_outputs(self, batch):
+        raise NotImplementedError
 
     def configure_optimizers(self):
         no_decay = ["bias", "LayerNorm.weight"]
@@ -169,7 +210,7 @@ class IEDataModule(LightningDataModule):
     def get_dataset(self, data_file, is_predict=False):
         raise NotImplementedError
 
-    def collocate_fn(self, batch):
+    def collocate_fn(self, batch, is_predict=False):
         raise NotImplementedError
 
     @staticmethod
@@ -210,7 +251,7 @@ class IEDataModule(LightningDataModule):
         return DataLoader(self.test_dataset, self.batch_size, collate_fn=self.collocate_fn)
 
     def predict_dataloader(self):
-        return DataLoader(self.predict_dataset, self.batch_size, collate_fn=self.collocate_fn)
+        return DataLoader(self.predict_dataset, self.batch_size, collate_fn=functools.partial(self.collocate_fn, is_predict=True))
 
 
 class IEDataSet(Dataset):

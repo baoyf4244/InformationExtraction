@@ -32,7 +32,8 @@ class FlatNERDataSet(IEDataSet):
 
         data['masks'] = [1] * len(data['tokens'])
         data['input_ids'] = self.vocab.convert_tokens_to_ids(data['tokens'])
-        data['target_ids'] = self.get_label_ids(line['labels'], len(data['tokens']))
+        if not self.is_predict:
+            data['target_ids'] = self.get_label_ids(line['labels'], len(data['tokens']))
         return data
 
 
@@ -48,13 +49,15 @@ class FlatNERDataModule(IEDataModule):
         dataset.make_dataset()
         return dataset
 
-    def collocate_fn(self, batch):
+    def collocate_fn(self, batch, is_predict=False):
         ids = self.get_data_by_name(batch, 'id')
         tokens = [self.get_data_by_name(batch, 'tokens')]
         masks = self.pad_batch(self.get_data_by_name(batch, 'masks'), 0)
         input_ids = self.pad_batch(self.get_data_by_name(batch, 'input_ids'), self.vocab.get_pad_id())
-        target_ids = self.pad_batch(self.get_data_by_name(batch, 'target_ids'), self.label_vocab.get_pad_id())
+        if is_predict:
+            return ids, tokens, masks, input_ids
 
+        target_ids = self.pad_batch(self.get_data_by_name(batch, 'target_ids'), self.label_vocab.get_pad_id())
         return ids, tokens, masks, input_ids, target_ids
 
 
@@ -70,6 +73,27 @@ class MRCNERDataSet(IEDataSet):
         label_question_mapping = dict(zip(self.label_vocab.get_vocab(), self.question_vocab.get_vocab()))
         return {key: self.tokenizer.tokenize(value) for key, value in label_question_mapping.items()}
 
+    @staticmethod
+    def get_labels(labels, entity_type, sent_len):
+        start_labels = [0] * sent_len
+        end_labels = [0] * sent_len
+        span_labels = [[0 for _ in range(sent_len)] for _ in range(sent_len)]
+
+        indices = labels.get(entity_type, [])
+        for start, end in indices:
+            start = start + len(question) + 2
+            end = end + len(question) + 2
+            if start < sent_len - 1:
+                start_labels[start] = 1
+
+                if end < sent_len - 1:
+                    end_labels[end] = 1
+                    span_labels[start][end] = 1
+                else:
+                    end_labels[sent_len - 2] = 1
+                    span_labels[start][sent_len - 2] = 1
+        return start_labels, end_labels, span_labels
+
     def get_data(self, line):
         dataset = []
         context_tokens = self.tokenizer.tokenize(line['text'])
@@ -77,33 +101,21 @@ class MRCNERDataSet(IEDataSet):
             token_type_ids = [0] * (len(question) + 2) + [1] * (len(context_tokens) + 1)
             tokens = question + ['[SEP]'] + context_tokens
             tokens = ['[CLS]'] + tokens[: self.max_len - 2] + ['[SEP]']
-            start_labels = [0] * len(tokens)
-            end_labels = [0] * len(tokens)
-            span_labels = [[0 for _ in range(len(tokens))] for _ in range(len(tokens))]
 
-            indices = line['labels'].get(label, [])
-            for start, end in indices:
-                start = start + len(question) + 2
-                end = end + len(question) + 2
-                if start < len(tokens) - 1:
-                    start_labels[start] = 1
-
-                    if end < len(tokens) - 1:
-                        end_labels[end] = 1
-                        span_labels[start][end] = 1
-                    else:
-                        end_labels[len(tokens) - 2] = 1
-                        span_labels[start][len(tokens) - 2] = 1
             data = {
                 'id': line['id'],
+                'entity_type': label,
                 'masks': [1] * len(tokens),
                 'tokens': tokens,
                 'input_ids': self.tokenizer.convert_tokens_to_ids(tokens),
-                'token_type_ids': token_type_ids[: len(tokens)],
-                'start_labels': start_labels,
-                'end_labels': end_labels,
-                'span_labels': span_labels
+                'token_type_ids': token_type_ids[: len(tokens)]
             }
+
+            if not self.is_predict:
+                start_labels, end_labels, span_labels = self.get_labels(line['labels'], label, len(tokens))
+                data['start_labels'] = start_labels
+                data['end_labels'] = end_labels
+                data['span_labels'] = span_labels
             dataset.append(data)
         return dataset
 
@@ -130,17 +142,21 @@ class MRCNERDataModule(IEDataModule):
             padded_batch[i, :len(batch[i]), :len(batch[i][0])] = torch.LongTensor(batch[i])
         return padded_batch
 
-    def collocate_fn(self, batch):
+    def collocate_fn(self, batch, is_predict=False):
         ids = self.get_data_by_name(batch, 'id')
-        tokens = [self.get_data_by_name(batch, 'tokens')]
+        tokens = self.get_data_by_name(batch, 'tokens')
+        entity_types = self.get_data_by_name(batch, 'entity_type')
         masks = self.pad_batch(self.get_data_by_name(batch, 'masks'), 0)
         input_ids = self.pad_batch(self.get_data_by_name(batch, 'input_ids'), 0)
         token_type_ids = self.pad_batch(self.get_data_by_name(batch, 'token_type_ids'), 0)
+
+        if is_predict:
+            return ids, tokens, entity_types, masks, input_ids, token_type_ids
         start_labels = self.pad_batch(self.get_data_by_name(batch, 'start_labels'), 0)
         end_labels = self.pad_batch(self.get_data_by_name(batch, 'end_labels'), 0)
         span_labels = self.pad_batch_2d(self.get_data_by_name(batch, 'span_labels'), 0)
 
-        return ids, tokens, masks, input_ids, token_type_ids, start_labels, end_labels, span_labels
+        return ids, tokens, entity_types, masks, input_ids, token_type_ids, start_labels, end_labels, span_labels
 
 
 if __name__ == '__main__':

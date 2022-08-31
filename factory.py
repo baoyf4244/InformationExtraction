@@ -14,8 +14,3 @@ def act_func_factory(name):
         return act_funcs[name]
     else:
         raise NotImplementedError('激活函数仅支持[relu, sigmod, softmax, gelu, tanh]')
-
-
-
-
-

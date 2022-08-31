@@ -1,3 +1,5 @@
+import json
+
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
@@ -74,16 +76,11 @@ class MRCNERModule(PreTrainBasedModule):
         return tp, fp, fn
 
     def get_training_outputs(self, batch):
-        ids, tokens, attention_mask, input_ids, token_type_ids, start_labels, end_labels, span_labels = batch
+        ids, tokens, entity_types, attention_mask, input_ids, token_type_ids, start_labels, end_labels, span_labels = batch
         masks = torch.logical_and(attention_mask, token_type_ids)
 
         start_logits, end_logits, span_logits = self(input_ids, attention_mask, token_type_ids)
         span_preds = self.get_spans(start_logits, end_logits, span_logits, masks)
-        return span_preds, span_labels, masks, start_logits, end_logits, span_logits, start_labels, end_labels
-
-    def compute_step_stats(self, batch, stage):
-        span_preds, span_labels, masks, start_logits, end_logits, span_logits, start_labels, end_labels = self.get_training_outputs(batch)
-
         start_logits = start_logits.squeeze(-1)
         end_logits = end_logits.squeeze(-1)
         span_logits = span_logits.squeeze(-1)
@@ -97,25 +94,34 @@ class MRCNERModule(PreTrainBasedModule):
         span_loss = self.get_loss(span_logits, span_labels, span_masks)
 
         loss = start_loss + end_loss + span_loss
+        return span_preds, span_labels, masks, loss
 
-        tp, fp, fn = self.get_f1_stats(span_preds, span_labels, masks)
-        recall, precision, f1 = self.get_f1_score(tp, fp, fn)
+    def get_predict_outputs(self, batch):
+        ids, tokens, entity_types, attention_mask, input_ids, token_type_ids = batch
+        masks = torch.logical_and(attention_mask, token_type_ids)
 
-        logs = {
-            stage + '_tp': tp,
-            stage + '_fp': fp,
-            stage + '_fn': fn,
-            stage + '_f1_score': f1,
-            stage + '_recall': recall,
-            stage + '_precision': precision,
-            stage + '_loss': loss,
-            stage + '_start_loss': start_loss,
-            stage + '_end_loss': end_loss
-        }
+        start_logits, end_logits, span_logits = self(input_ids, attention_mask, token_type_ids)
+        span_preds = self.get_spans(start_logits, end_logits, span_logits, masks)
+        return ids, entity_types, tokens, span_preds
 
-        if stage == 'train':
-            logs['loss'] = logs['train_loss']
+    def predict_step(self, batch, batch_idx: int, dataloader_idx: int = 0):
+        ids, entity_types, tokens, span_preds = self.get_outputs(batch, 'predict')
+        for idx, entity_type, span_pred in zip(ids, entity_types, span_preds):
+            entities = []
+            span_pred = span_pred.cpu().numpy().tolist()
+            for start in range(len(span_pred)):
+                for end in range(len(span_pred)):
+                    if span_pred[start][end] == 1:
+                        entity = {
+                            'type': entity_type,
+                            'offset': [start, end],
+                            'span': self.tokenizer.convert_tokens_to_string(tokens[start: end + 1])
+                        }
+                        entities.append(entity)
+            data = {
+                'id': idx,
+                'entities': entities
+            }
+            self.results.write(json.dumps(data, ensure_ascii=False) + '\n')
 
-        self.log_dict(logs, prog_bar=True)
 
-        return logs

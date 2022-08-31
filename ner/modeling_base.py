@@ -1,3 +1,5 @@
+import json
+
 import torch
 from ner.vocab import EntityLabelVocab
 from module import Vocab, IEModule
@@ -5,8 +7,8 @@ from collections import defaultdict
 
 
 class NERModule(IEModule):
-    def __init__(self, vocab_file, label_file):
-        super(NERModule, self).__init__()
+    def __init__(self, vocab_file, label_file, *args, **kwargs):
+        super(NERModule, self).__init__(*args, **kwargs)
         self.vocab = Vocab(vocab_file)
         self.label_vocab = EntityLabelVocab(label_file)
         self.vocab_size = self.vocab.get_vocab_size()
@@ -74,4 +76,20 @@ class NERModule(IEModule):
         _, _, masks, input_ids, targets = batch
         preds, loss = self(input_ids, targets, masks)
         return preds, targets, masks, loss
+
+    def get_predict_outputs(self, batch):
+        ids, tokens, masks, input_ids = batch
+        preds, loss = self(input_ids, masks=masks)
+        return ids, tokens, preds, masks
+
+    def predict_step(self, batch, batch_idx: int, dataloader_idx: int = 0):
+        ids, tokens, preds, masks = self.get_predict_outputs(batch)
+        chunks = self.get_batch_ner_chunks(preds, masks)
+        for idx, token, chunk in zip(ids, tokens, chunks):
+            entities = []
+            for entity_type,  offsets in chunk:
+                for start, end in offsets:
+                    entities.append({'type': entity_type, 'offset': [start, end - 1], 'span': token[start: end]})
+
+            self.results.write(json.dumps({'id': idx, 'entities': entities}, ensure_ascii=False) + '\n')
 

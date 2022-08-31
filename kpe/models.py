@@ -129,7 +129,7 @@ class Seq2SeqKPEModule(IEModule):
         return p, decoder_hidden, coverage_memery
 
     def get_training_outputs(self, batch):
-        ids, targets, input_ids, input_masks, target_ids, target_masks, input_vocab_ids, oov_ids, oov_id_masks, oov2idx = batch
+        ids, input_ids, input_masks, input_vocab_ids, oov_ids, oov_id_masks, oov2idx, targets, target_ids, target_masks = batch
         idx2oov = [{v: k for k, v in oov.items()} for oov in oov2idx]
         props = self(input_ids, input_masks, input_vocab_ids, oov_ids, target_ids)
         loss = torch.gather(props, -1, target_ids.unsqueeze(-1)).squeeze()
@@ -169,5 +169,5 @@ class Seq2SeqKPEModule(IEModule):
             correct_num += len((set(pred).intersection(set(target))))
         return pred_num, gold_num, correct_num
 
-
-
+    def get_predict_outputs(self, batch):
+        ids, input_ids, input_masks, input_vocab_ids, oov_ids, oov_id_masks, oov2idx = batch

@@ -24,19 +24,23 @@ class KPEDataSet(IEDataSet):
         token_ids = self.vocab.convert_tokens_to_ids(tokens)
         masks = [1] * len(token_ids)
         input_vocab_ids, oov2idx = self.get_oov(tokens, token_ids)
-        targets = self.vocab.tokenize(self.vocab.get_vertical_token().join(line['keywords']))
-        target_ids = self.vocab.convert_tokens_to_ids(targets) + [self.vocab.get_end_id()]
 
         data = {
             'id': line['id'],
             'masks': masks,
-            'targets': targets,
             'input_ids': token_ids,
-            'target_ids': target_ids,
-            'target_masks': [1] * len(target_ids),
             'input_vocab_ids': input_vocab_ids,
             'oov2idx': oov2idx
         }
+
+        if not self.is_predict:
+            targets = self.vocab.tokenize(self.vocab.get_vertical_token().join(line['keywords']))
+            target_ids = self.vocab.convert_tokens_to_ids(targets) + [self.vocab.get_end_id()]
+
+            data['targets'] = targets
+            data['target_ids'] = target_ids
+            data['target_masks'] = [1] * len(target_ids),
+
         return data
 
 
@@ -69,9 +73,8 @@ class KPEDataModule(IEDataModule):
             padded_seqs.append(seq + [0] * (max_len - len(seq)))
         return padded_seqs
 
-    def collocate_fn(self, batch):
+    def collocate_fn(self, batch, is_predict=False):
         ids = self.get_data_by_name(batch, 'id')
-        targets = self.get_data_by_name(batch, 'targets')
 
         oov2idx = self.get_data_by_name(batch, 'oov2idx')
         oov_ids = [list(oov.values()) for oov in oov2idx]
@@ -81,11 +84,16 @@ class KPEDataModule(IEDataModule):
 
         input_masks = self.pad_batch(self.get_data_by_name(batch, 'masks'), 0)
         input_ids = self.pad_batch(self.get_data_by_name(batch, 'input_ids'), self.vocab.get_pad_id())
-        target_masks = self.pad_batch(self.get_data_by_name(batch, 'target_masks'), 0)
-        target_ids = self.pad_batch(self.get_data_by_name(batch, 'target_ids'), self.vocab.get_pad_id())
         input_vocab_ids = self.pad_batch(self.get_data_by_name(batch, 'input_vocab_ids'), self.vocab.get_pad_id())
 
-        return ids, targets, input_ids, input_masks, target_ids, target_masks, input_vocab_ids, oov_ids, oov_id_masks, oov2idx
+        if is_predict:
+            return ids, input_ids, input_masks, input_vocab_ids, oov_ids, oov_id_masks, oov2idx
+
+        targets = self.get_data_by_name(batch, 'targets')
+        target_masks = self.pad_batch(self.get_data_by_name(batch, 'target_masks'), 0)
+        target_ids = self.pad_batch(self.get_data_by_name(batch, 'target_ids'), self.vocab.get_pad_id())
+
+        return ids, input_ids, input_masks, input_vocab_ids, oov_ids, oov_id_masks, oov2idx, targets, target_ids, target_masks
 
 
 if __name__ == '__main__':
