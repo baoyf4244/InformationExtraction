@@ -1,7 +1,8 @@
+import math
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-
+from queue import PriorityQueue
 from module import IEModule
 from kpe.vocab import KPESeq2SeqVocab
 from layers import BahdanauAttention, Encoder
@@ -74,65 +75,81 @@ class Seq2SeqKPEModule(IEModule):
         self.register_buffer('start_ids', torch.LongTensor([self.vocab.get_start_id()]))
         self.register_buffer('vocab_extended', torch.zeros(1, 1))
 
-    def forward(self, input_ids, input_masks, input_vocab_ids, oov_ids, target_ids):
+    def forward(self, input_ids, input_masks, input_vocab_ids, oov_ids, target_ids, inference=False):
         inputs = self.embedding(input_ids)
-        encoder_outputs, encoder_hidden = self.encoder(inputs)
+        encoder_outputs, encoder_hidden = self.encoder(inputs)  # [bs, ts, hs]
         decoder_hidden = (torch.cat(torch.chunk(encoder_hidden[0], 2, 0), -1).squeeze(0),
-                          torch.cat(torch.chunk(encoder_hidden[1], 2, 0), -1).squeeze(0))
+                          torch.cat(torch.chunk(encoder_hidden[1], 2, 0), -1).squeeze(0))  # [bs, hs]
 
-        if self.is_coverage:
-            coverage_memery = self.coverage_memery.repeat(input_ids.size())
-        else:
-            coverage_memery = None
+        props = self.greedy_decode(encoder_outputs, decoder_hidden, input_masks, input_vocab_ids, oov_ids, target_ids)
+        return props
 
-        decoder_max_steps = target_ids.size(1)
+    def greedy_decode(self, encoder_outputs, encoder_hidden, encoder_masks, encoder_vocab, oov_ids, target_ids=None):
+        teacher_forcing = False if target_ids is None else True
+        decoder_max_steps = self.decoder_max_steps if target_ids is None else target_ids.size(1)
+        coverage_memery = self.coverage_memery.repeat(encoder_masks.size()) if self.is_coverage else None
+        decoder_input_ids = self.start_ids.repeat(encoder_outputs.size(0))
 
+        decoder_hidden = encoder_hidden
         props = []
+
         for i in range(decoder_max_steps):
-            if i == 0:
-                decoder_input_ids = self.start_ids.repeat([target_ids.size(0)])
-            else:
-                decoder_input_ids = target_ids[:, i]
-            p, decoder_hidden, coverage_memery = self.decode(encoder_outputs, input_masks, input_vocab_ids, oov_ids,
-                                                             decoder_input_ids, decoder_hidden, coverage_memery)
+            decoder_input = self.embedding(decoder_input_ids)
+            decoder_hidden, attention_output, attention_scores = self.decoder(encoder_outputs, decoder_input,
+                                                                              decoder_hidden, encoder_masks,
+                                                                              coverage_memery)
+            if self.is_coverage:
+                coverage_memery = coverage_memery + attention_scores
+            p_vocab = self.linear(torch.cat([decoder_hidden[0], attention_output], -1))
+            p_vocab = F.softmax(p_vocab, -1)
+            p_vocab_extended = torch.cat([p_vocab, self.vocab_extended.repeat(oov_ids.size())], -1)
+            p_gen = self.pointer(attention_output, decoder_hidden[0], decoder_input)
+            p = p_gen * p_vocab_extended
+            p = p.scatter_add(1, encoder_vocab, (1 - p_gen) * attention_scores)
+            decoder_input_ids = target_ids[:, i] if teacher_forcing else p.argmax(-1)
             props.append(p.unsqueeze(1))
+
         return torch.cat(props, 1)
 
-    def decode(self, encoder_outputs, encoder_masks, encoder_vocab,
-               oov_ids, decoder_input_ids, decoder_hidden, coverage_memery):
-        """
+    def beam_search_decode(self, encoder_outputs, encoder_hidden, encoder_masks, encoder_vocab, oov_ids):
+        batch_size = encoder_outputs.size(0)
+        coverage_memery = self.coverage_memery.repeat(encoder_masks.size()) if self.is_coverage else None
+        decoder_hidden = encoder_hidden
+        for i in range(batch_size):
+            seqs = []
+            decoder_input_ids = self.start_ids
+            nodes = PriorityQueue()
+            node = BeamNode(None, 0, self.vocab.get_start_id(), 1, encoder_hidden, coverage_memery)
+            nodes.put((-node.mean_prop(), node))
 
-        Args:
-            decoder_input_ids:
-            encoder_outputs:
-            encoder_masks:
-            encoder_vocab: 将 UNK 替换为oov_id后的input_ids
-            oov_ids:
-            decoder_hidden:
-            coverage_memery:
+            decoder_input = self.embedding(decoder_input_ids)
+            decoder_hidden, attention_output, attention_scores = self.decoder(encoder_outputs, decoder_input,
+                                                                              decoder_hidden, encoder_masks,
+                                                                              coverage_memery)
+            if self.is_coverage:
+                coverage_memery = coverage_memery + attention_scores
+            p_vocab = self.linear(torch.cat([decoder_hidden[0], attention_output], -1))
+            p_vocab = F.softmax(p_vocab, -1)
+            p_vocab_extended = torch.cat([p_vocab, self.vocab_extended.repeat(oov_ids.size())], -1)
+            p_gen = self.pointer(attention_output, decoder_hidden[0], decoder_input)
+            p = p_gen * p_vocab_extended
+            p = p.scatter_add(1, encoder_vocab, (1 - p_gen) * attention_scores)
 
-        Returns:
+            topk, toki = p.topk(self.beam_size)
 
-        """
-        decoder_input = self.embedding(decoder_input_ids)
-        decoder_hidden, attention_output, attention_scores = self.decoder(encoder_outputs, decoder_input,
-                                                                          decoder_hidden, encoder_masks, coverage_memery)
-        if self.is_coverage:
-            coverage_memery = coverage_memery + attention_scores
-        p_vocab = self.linear(torch.cat([decoder_hidden[0], attention_output], -1))
-        p_vocab = F.softmax(p_vocab, -1)
-        p_vocab_extended = torch.cat([p_vocab, self.vocab_extended.repeat(oov_ids.size())], -1)
-        p_gen = self.pointer(attention_output, decoder_hidden[0], decoder_input)
-        p = p_gen * p_vocab_extended
-        p = p.scatter_add(1, encoder_vocab, (1 - p_gen) * attention_scores)
+            for b in range(self.beam_size):
+                prop = topk[0][b]
+                token_id = toki[0][b]
+                score, node = nodes.get()
+                last_node = BeamNode(node, prop + node.prop, token_id, node.length + 1, decoder_hidden, coverage_memery)
 
-        return p, decoder_hidden, coverage_memery
+
 
     def get_training_outputs(self, batch):
         ids, input_ids, input_masks, input_vocab_ids, oov_ids, oov_id_masks, oov2idx, targets, target_ids, target_masks = batch
         idx2oov = [{v: k for k, v in oov.items()} for oov in oov2idx]
         props = self(input_ids, input_masks, input_vocab_ids, oov_ids, target_ids)
-        loss = torch.gather(props, -1, target_ids.unsqueeze(-1)).squeeze()
+        loss = torch.gather(props, -1, target_ids.unsqueeze(-1)).squeeze(-1)  # todo
         loss = -torch.log(loss + 1e-8) * target_masks
         # loss = F.cross_entropy(props.view(-1, props.size(-1)), target_ids.view(-1), reduction='none')
         # loss = loss.view(-1, target_ids.size(1)) * target_masks
@@ -171,3 +188,16 @@ class Seq2SeqKPEModule(IEModule):
 
     def get_predict_outputs(self, batch):
         ids, input_ids, input_masks, input_vocab_ids, oov_ids, oov_id_masks, oov2idx = batch
+
+
+class BeamNode:
+    def __init__(self, prev, prop, token_id, length, hidden, coverage):
+        self.prev =prev
+        self.prop = prop
+        self.token_id = token_id
+        self.length = length
+        self.hidden = hidden
+        self.coverage = coverage
+
+    def mean_prop(self):
+        return self.prop / (self.length - 1 + 1e-6)

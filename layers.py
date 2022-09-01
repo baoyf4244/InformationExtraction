@@ -139,7 +139,7 @@ class Decoder(nn.Module):
 
         """
         if decoder_input.dim() == 3 and decoder_input.size(1) == 1:
-            decoder_input = torch.squeeze(decoder_input)
+            decoder_input = torch.squeeze(decoder_input, 1)
 
         att_outputs, att_scores = self.att(decode_hidden[0], encoder_outputs, encoder_masks)
         hidden, cell = self.lstm(torch.cat([att_outputs, decoder_input], 1), decode_hidden)

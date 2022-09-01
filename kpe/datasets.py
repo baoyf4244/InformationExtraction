@@ -19,6 +19,15 @@ class KPEDataSet(IEDataSet):
                 input_vocab_ids.append(token_id)
         return input_vocab_ids, oov2idx
 
+    def get_target_ids(self, targets):
+        target_ids = []
+        for target in targets:
+            tokens = self.vocab.tokenize(target)
+            target_ids.extend(self.vocab.convert_tokens_to_ids(tokens))
+            target_ids.append(self.vocab.get_vertical_id())
+        target_ids.append(self.vocab.get_end_id())
+        return target_ids
+
     def get_data(self, line):
         tokens = self.vocab.tokenize(line['text'])
         token_ids = self.vocab.convert_tokens_to_ids(tokens)
@@ -34,12 +43,12 @@ class KPEDataSet(IEDataSet):
         }
 
         if not self.is_predict:
-            targets = self.vocab.tokenize(self.vocab.get_vertical_token().join(line['keywords']))
-            target_ids = self.vocab.convert_tokens_to_ids(targets) + [self.vocab.get_end_id()]
+            targets = line['keywords']
+            target_ids = self.get_target_ids(targets)
 
             data['targets'] = targets
             data['target_ids'] = target_ids
-            data['target_masks'] = [1] * len(target_ids),
+            data['target_masks'] = [1] * len(target_ids)
 
         return data
 
