@@ -74,14 +74,6 @@ class KPEDataModule(IEDataModule):
         dataset.make_dataset()
         return dataset
 
-    @staticmethod
-    def pad(seqs):
-        max_len = max(len(seq) for seq in seqs)
-        padded_seqs = []
-        for seq in seqs:
-            padded_seqs.append(seq + [0] * (max_len - len(seq)))
-        return padded_seqs
-
     def collocate_fn(self, batch, is_predict=False):
         ids = self.get_data_by_name(batch, 'id')
 

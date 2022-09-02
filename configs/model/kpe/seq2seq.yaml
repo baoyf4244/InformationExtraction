@@ -4,8 +4,10 @@ model:
     embedding_size: 128
     hidden_size: 128
     num_layers: 1
-    decoder_max_steps: 50
+    decoder_max_steps: 20
+    decoder_sentence_num: 1
     beam_size: 5
     vocab_file: data/kpe/vocab.txt
+    predict_results_file: data/kpe/results.txt
     do_lower: false
     is_coverage: true
