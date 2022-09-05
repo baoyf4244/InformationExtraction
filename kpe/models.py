@@ -128,16 +128,22 @@ class Seq2SeqKPEModule(IEModule):
         coverage_memery = self.coverage_memery.repeat(1, encoder_masks.size(1)) if self.is_coverage else None
         batch_seqs = []
         for i in range(batch_size):
+            nodes = []
             last_nodes = []
-            nodes = PriorityQueue()
-            hidden = (encoder_hidden[0][i: i + 1], encoder_hidden[1][i: i + 1])
-            node = BeamNode(None, 0, self.vocab.get_start_id(), 1, hidden, coverage_memery)
-            nodes.put((-node.mean_prop(), node))
+            decoder_hidden = (encoder_hidden[0][i: i + 1], encoder_hidden[1][i: i + 1])
+            p, decoder_hidden, coverage_memery = self.decode(decoder_hidden, self.start_ids,
+                                                             encoder_masks[i: i + 1], encoder_outputs[i:i + 1],
+                                                             encoder_vocab[i: i + 1], oov_ids[i: i + 1],
+                                                             coverage_memery)
+            topk, toki = p.topk(self.beam_size)
 
-            while len(last_nodes) < self.decoder_sentence_num:
-                try:
-                    score, node = nodes.get(timeout=1)
-                    if (node.token_id == self.vocab.get_end_id() and node.prev is not None) or node.length > self.decoder_max_steps:
+            for b in range(self.beam_size):
+                node = BeamNode(None, topk[0][b], toki[0][b], 1, decoder_hidden, coverage_memery)
+                nodes.append(node)
+            for s in range(1, self.decoder_max_steps):
+                new_nodes = []
+                for node in nodes:
+                    if node.token_id == self.vocab.get_end_id() and node.prev is not None:
                         last_nodes.append(node)
                         continue
 
@@ -156,19 +162,17 @@ class Seq2SeqKPEModule(IEModule):
                     for b in range(self.beam_size):
                         prop = topk[0][b]
                         token_id = toki[0][b]
-                        last_node = BeamNode(node, prop + node.prop, token_id, node.length + 1, decoder_hidden, coverage_memery)
-                        nodes.put((-last_node.mean_prop(), last_node))
-                except Exception as e:
-                    print(e)
-                    print(nodes)
+                        new_node = BeamNode(node, prop + node.prop, token_id, node.length + 1, decoder_hidden, coverage_memery)
+                        new_nodes.append(new_node)
+                new_nodes.sort(key=lambda k: k.mean_prop(), reverse=False)
+                nodes = new_nodes[: self.beam_size]
 
-            seqs = []
-            for last_node in sorted(last_nodes, key=lambda key: key.mean_prop, reverse=True):
-                token_ids = []
-                while last_node.prev is not None:
-                    token_ids.append(last_node.token_id)
-                seqs.append(token_ids[::-1])
-            batch_seqs.append(seqs)
+            node = sorted(last_nodes + nodes, key=lambda key: key.mean_prop(), reverse=True)[0]
+            token_ids = []
+            while node.prev is not None:
+                token_ids.append(node.token_id.item())
+                node = node.prev
+            batch_seqs.append(token_ids[::-1])
         return batch_seqs
 
     def decode(self, decoder_hidden, decoder_input_ids, encoder_masks, encoder_outputs, encoder_vocab, oov_ids, coverage_memery):
@@ -238,7 +242,7 @@ class Seq2SeqKPEModule(IEModule):
             pred_num += len(pred)
             gold_num += len(target)
             correct_num += len((set(pred).intersection(set(target))))
-        return pred_num, gold_num, correct_num
+        return correct_num, pred_num - correct_num, gold_num - correct_num
 
 
 class BeamNode:
@@ -251,4 +255,4 @@ class BeamNode:
         self.coverage = coverage
 
     def mean_prop(self):
-        return self.prop / (self.length - 1 + 1e-6)
+        return self.prop / (self.length + 1e-6)
