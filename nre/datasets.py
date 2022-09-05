@@ -38,18 +38,19 @@ class WDNREDataSet(IEDataSet):
     def get_data(self, line):
         tokens = self.vocab.tokenize(line['text'])
         token_ids = self.vocab.convert_tokens_to_ids(tokens)
-        targets = self.get_targets(line['label'], tokens)
-        target_ids = self.vocab.convert_tokens_to_ids(targets)
-
         data = {
             'tokens': tokens,
             'token_ids': token_ids,
             'masks': [1] * len(token_ids),
-            'vocab_masks': self.get_vocab_masks(token_ids),
-            'targets': targets,
-            'target_ids': target_ids,
-            'target_masks': [1] * len(target_ids)
+            'vocab_masks': self.get_vocab_masks(token_ids)
         }
+
+        if not self.is_predict:
+            targets = self.get_targets(line['label'], tokens)
+            target_ids = self.vocab.convert_tokens_to_ids(targets)
+            data['targets'] = targets
+            data['target_ids'] = target_ids
+            data['target_masks'] = [1] * len(target_ids)
         return data
 
 
@@ -72,13 +73,15 @@ class WDNREDataModule(IEDataModule):
         dataset.make_dataset()
         return dataset
 
-    def collocate_fn(self, batch):
+    def collocate_fn(self, batch, is_predict=False):
         tokens = self.get_data_by_name(batch, 'tokens')
-        targets = self.get_data_by_name(batch, 'targets')
         vocab_masks = torch.LongTensor(self.get_data_by_name(batch, 'vocab_masks'))
-
         input_ids = self.pad_batch(self.get_data_by_name(batch, 'token_ids'), self.vocab.get_pad_id())
         input_masks = self.pad_batch(self.get_data_by_name(batch, 'masks'), 0)
+
+        if is_predict:
+            return tokens, input_ids, input_masks, vocab_masks
+        targets = self.get_data_by_name(batch, 'targets')
         target_ids = self.pad_batch(self.get_data_by_name(batch, 'target_ids'), self.vocab.get_pad_id())
         target_masks = self.pad_batch(self.get_data_by_name(batch, 'target_masks'), 0)
 
@@ -107,18 +110,20 @@ class PTRNREDataSet(IEDataSet):
         tokens = self.vocab.tokenize(line['text'])
         token_ids = self.vocab.convert_tokens_to_ids(tokens)
         head_start_offsets, head_end_offsets, tail_start_offsets, tail_end_offsets, relation_ids = self.get_targets(line['label'])
-
         data = {
             'tokens': tokens,
             'token_ids': token_ids,
-            'masks': [1] * len(token_ids),
-            'head_start_offsets': head_start_offsets + [-1],
-            'head_end_offsets': head_end_offsets + [-1],
-            'tail_start_offsets': tail_start_offsets + [-1],
-            'tail_end_offsets': tail_end_offsets + [-1],
-            'relation_ids': relation_ids + [self.label_vocab.get_end_id()],
-            'target_masks': [1] * len(relation_ids)
+            'masks': [1] * len(token_ids)
         }
+
+        if not self.is_predict:
+            data['head_start_offsets'] = head_start_offsets + [-1]
+            data['head_end_offsets'] = head_end_offsets + [-1]
+            data['tail_start_offsets'] = tail_start_offsets + [-1]
+            data['tail_end_offsets'] = tail_end_offsets + [-1]
+            data['relation_ids'] = relation_ids + [self.label_vocab.get_end_id()]
+            data['target_masks'] = [1] * len(relation_ids)
+
         return data
 
 
@@ -146,9 +151,13 @@ class PTRNREDataModule(IEDataModule):
         dataset.make_dataset()
         return dataset
 
-    def collocate_fn(self, batch):
+    def collocate_fn(self, batch, is_predict=False):
+        tokens = self.get_data_by_name(batch, 'tokens')
         input_ids = self.pad_batch(self.get_data_by_name(batch, 'token_ids'), self.vocab.get_pad_id())
         input_masks = self.pad_batch(self.get_data_by_name(batch, 'masks'), 0)
+
+        if is_predict:
+            return tokens, input_ids, input_masks
 
         head_start_offsets = self.pad_batch(self.get_data_by_name(batch, 'head_start_offsets'), 0)
         head_end_offsets = self.pad_batch(self.get_data_by_name(batch, 'head_end_offsets'), 0)
@@ -157,7 +166,7 @@ class PTRNREDataModule(IEDataModule):
         relation_ids = self.pad_batch(self.get_data_by_name(batch, 'relation_ids'), 0)
         target_masks = self.pad_batch(self.get_data_by_name(batch, 'target_masks'), 0)
 
-        return (input_ids, input_masks, head_start_offsets, head_end_offsets, tail_start_offsets,
+        return (tokens, input_ids, input_masks, head_start_offsets, head_end_offsets, tail_start_offsets,
                 tail_end_offsets, relation_ids, target_masks)
 
 

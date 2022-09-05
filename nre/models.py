@@ -261,7 +261,7 @@ class Seq2SeqPTRNREModule(Seq2SeqNREModule):
         return pred_num, gold_num, correct_num
 
     def get_training_outputs(self, batch):
-        input_ids, input_masks, head_start_ids, head_end_ids, tail_start_ids, tail_end_ids, target_ids, target_masks = batch
+        tokens, input_ids, input_masks, head_start_ids, head_end_ids, tail_start_ids, tail_end_ids, target_ids, target_masks = batch
         head_start_logits, head_end_logits, tail_start_logits, tail_end_logits, relation_logits = self(input_ids,
                                                                                                        input_masks,
                                                                                                        target_ids,

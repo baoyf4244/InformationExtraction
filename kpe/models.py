@@ -1,7 +1,7 @@
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from queue import PriorityQueue
+from collections import defaultdict
 from module import IEModule
 from kpe.vocab import KPESeq2SeqVocab
 from layers import BahdanauAttention, Encoder
@@ -117,11 +117,44 @@ class Seq2SeqKPEModule(IEModule):
         return torch.cat(chunks, 0)
 
     def beam_search_decode_2(self, encoder_outputs, encoder_hidden, encoder_masks, encoder_vocab, oov_ids):
+        batch_size = encoder_outputs.size(0)
+        coverage_memery = self.coverage_memery.repeat(1, encoder_masks.size(1)) if self.is_coverage else None
+        p, decoder_hidden, coverage_memery = self.decode(encoder_hidden, self.start_ids.repeat(batch_size * self.beam_size),
+                                                         encoder_masks, encoder_outputs,
+                                                         encoder_vocab, oov_ids,
+                                                         coverage_memery)
+
+        topk, topi = torch.sort(p, descending=True)
+        beam_nodes = []
+        for b in range(batch_size):
+            for k, i in zip(topk[b], topi[b]):
+                if i.items() != self.vocab.get_end_id():
+                    beam_nodes.append(BeamNode(None, k, i, 1, decoder_hidden, coverage_memery))
+
+                if len(beam_nodes) == self.beam_size * batch_size:
+                    break
+
         encoder_outputs = self.batch_expand(encoder_outputs, self.beam_size)
-        encoder_hidden = (self.batch_expand(encoder_hidden[0], self.beam_size), self.batch_expand(encoder_hidden[1], self.beam_size))
+        decoder_hidden = (self.batch_expand(decoder_hidden[0], self.beam_size), self.batch_expand(decoder_hidden[1], self.beam_size))
         encoder_masks = self.batch_expand(encoder_masks, self.beam_size)
         encoder_vocab = self.batch_expand(encoder_vocab, self.beam_size)
         oov_ids = self.batch_expand(oov_ids, self.beam_size)
+        batch_size = encoder_outputs.size(0)
+
+        batch_seqs = defaultdict(list)
+        for i in range(self.decoder_max_steps):
+            decoder_input_ids = torch.cat([node.token_id for node in beam_nodes], 0)
+
+            p, decoder_hidden, coverage_memery = self.decode(decoder_hidden,
+                                                             decoder_input_ids,
+                                                             encoder_masks, encoder_outputs,
+                                                             encoder_vocab, oov_ids,
+                                                             coverage_memery)
+            topk, topi = torch.sort(p, descending=True)
+            new_beam_nodes = [[] for _ in range(batch_size)]
+            for node, k, idx in zip(beam_nodes, topk, topi):
+                pass
+
 
     def beam_search_decode(self, encoder_outputs, encoder_hidden, encoder_masks, encoder_vocab, oov_ids):
         batch_size = encoder_outputs.size(0)
