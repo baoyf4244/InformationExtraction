@@ -97,66 +97,73 @@ class Seq2SeqKPEModule(IEModule):
         decoder_input_ids = self.start_ids.repeat(encoder_outputs.size(0))
 
         decoder_hidden = encoder_hidden
-        props = []
+        probs = []
 
         for i in range(decoder_max_steps):
             p, decoder_hidden, coverage_memery = self.decode(decoder_hidden, decoder_input_ids,
                                                              encoder_masks, encoder_outputs, encoder_vocab, oov_ids,
                                                              coverage_memery)
             decoder_input_ids = target_ids[:, i] if teacher_forcing else p.argmax(-1)
-            props.append(p.unsqueeze(1))
+            probs.append(p.unsqueeze(1))
 
-        return torch.cat(props, 1)
+        return torch.cat(probs, 1)
 
     @staticmethod
     def batch_expand(tensor, beam_size):
         batch_size = tensor.size(0)
         chunks = torch.chunk(tensor, batch_size)
         expand_sizes = (beam_size, ) + (-1, ) * (tensor.dim() - 1)
-        chunks = [chunk.view(expand_sizes) for chunk in chunks]
+        chunks = [chunk.expand(expand_sizes) for chunk in chunks]
         return torch.cat(chunks, 0)
 
-    def beam_search_decode_2(self, encoder_outputs, encoder_hidden, encoder_masks, encoder_vocab, oov_ids):
+    def beam_search_decode(self, encoder_outputs, encoder_hidden, encoder_masks, encoder_vocab, oov_ids):
         batch_size = encoder_outputs.size(0)
         coverage_memery = self.coverage_memery.repeat(1, encoder_masks.size(1)) if self.is_coverage else None
-        p, decoder_hidden, coverage_memery = self.decode(encoder_hidden, self.start_ids.repeat(batch_size * self.beam_size),
-                                                         encoder_masks, encoder_outputs,
-                                                         encoder_vocab, oov_ids,
-                                                         coverage_memery)
+        next_probs, decoder_hidden, coverage_memery = self.decode(encoder_hidden,
+                                                                  self.start_ids.repeat(batch_size),
+                                                                  encoder_masks, encoder_outputs,
+                                                                  encoder_vocab, oov_ids,
+                                                                  coverage_memery)
 
-        topk, topi = torch.sort(p, descending=True)
-        beam_nodes = []
-        for b in range(batch_size):
-            for k, i in zip(topk[b], topi[b]):
-                if i.items() != self.vocab.get_end_id():
-                    beam_nodes.append(BeamNode(None, k, i, 1, decoder_hidden, coverage_memery))
-
-                if len(beam_nodes) == self.beam_size * batch_size:
-                    break
+        vocab_size = next_probs.size(-1)
+        probs, next_ids = torch.topk(next_probs, self.beam_size)  # [bs, bw]
+        outputs = next_ids.reshape(-1, 1)
 
         encoder_outputs = self.batch_expand(encoder_outputs, self.beam_size)
-        decoder_hidden = (self.batch_expand(decoder_hidden[0], self.beam_size), self.batch_expand(decoder_hidden[1], self.beam_size))
         encoder_masks = self.batch_expand(encoder_masks, self.beam_size)
         encoder_vocab = self.batch_expand(encoder_vocab, self.beam_size)
         oov_ids = self.batch_expand(oov_ids, self.beam_size)
-        batch_size = encoder_outputs.size(0)
 
-        batch_seqs = defaultdict(list)
-        for i in range(self.decoder_max_steps):
-            decoder_input_ids = torch.cat([node.token_id for node in beam_nodes], 0)
+        decoder_hidden = (self.batch_expand(decoder_hidden[0], self.beam_size), self.batch_expand(decoder_hidden[1], self.beam_size))
+        coverage_memery = self.batch_expand(coverage_memery, self.beam_size)
 
-            p, decoder_hidden, coverage_memery = self.decode(decoder_hidden,
-                                                             decoder_input_ids,
-                                                             encoder_masks, encoder_outputs,
-                                                             encoder_vocab, oov_ids,
-                                                             coverage_memery)
-            topk, topi = torch.sort(p, descending=True)
-            new_beam_nodes = [[] for _ in range(batch_size)]
-            for node, k, idx in zip(beam_nodes, topk, topi):
-                pass
+        for i in range(self.decoder_max_steps - 1):
+            decoder_input_ids = outputs[:, -1]
+            next_probs, decoder_hidden, coverage_memery = self.decode(decoder_hidden,
+                                                                      decoder_input_ids,
+                                                                      encoder_masks, encoder_outputs,
+                                                                      encoder_vocab, oov_ids,
+                                                                      coverage_memery)
+            # [bs * bw, 1] + [bs * bw, vs] => [bs, bw, vs]
+            next_probs = next_probs.reshape(-1, self.beam_size, next_probs.size(-1))
+            probs = probs.unsqueeze(-1) + next_probs
+            probs = probs.flatten(start_dim=1)
+            probs, idx = torch.topk(probs, self.beam_size)  # [bs, bw]
+            next_ids = torch.remainder(idx, vocab_size).flatten().unsqueeze(-1)
+            prev_indices = (idx / vocab_size).long()
+            prev_indices = prev_indices + torch.arange(batch_size).unsqueeze(-1) * self.beam_size
+            prev_ids = outputs[prev_indices].flatten(end_dim=-2)
+            outputs = torch.cat([prev_ids, next_ids], 1)
+            decoder_hidden = (decoder_hidden[0][prev_indices].flatten(end_dim=-2), decoder_hidden[1][prev_indices].flatten(end_dim=-2))
+            coverage_memery = coverage_memery[prev_indices].flatten(end_dim=-2)
 
+        probs, idx = torch.topk(probs, 1)
+        prev_indices = (idx / vocab_size).long()
+        prev_indices = prev_indices + torch.arange(batch_size).unsqueeze(-1) * self.beam_size
 
-    def beam_search_decode(self, encoder_outputs, encoder_hidden, encoder_masks, encoder_vocab, oov_ids):
+        return outputs[prev_indices].flatten(end_dim=-2)
+
+    def beam_search_decode_2(self, encoder_outputs, encoder_hidden, encoder_masks, encoder_vocab, oov_ids):
         batch_size = encoder_outputs.size(0)
         coverage_memery = self.coverage_memery.repeat(1, encoder_masks.size(1)) if self.is_coverage else None
         batch_seqs = []
@@ -209,6 +216,20 @@ class Seq2SeqKPEModule(IEModule):
         return batch_seqs
 
     def decode(self, decoder_hidden, decoder_input_ids, encoder_masks, encoder_outputs, encoder_vocab, oov_ids, coverage_memery):
+        """
+
+        Args:
+            decoder_hidden:
+            decoder_input_ids:
+            encoder_masks:
+            encoder_outputs:
+            encoder_vocab:
+            oov_ids:
+            coverage_memery:
+
+        Returns:
+            p: [bs, vs]
+        """
         decoder_input = self.embedding(decoder_input_ids)
         decoder_hidden, attention_output, attention_scores = self.decoder(encoder_outputs, decoder_input,
                                                                           decoder_hidden, encoder_masks,
