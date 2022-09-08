@@ -138,7 +138,7 @@ class Seq2SeqKPEModule(IEModule):
         coverage_memery = self.batch_expand(coverage_memery, self.beam_size)
 
         for i in range(self.decoder_max_steps - 1):
-            decoder_input_ids = outputs[:, -1]
+            decoder_input_ids = torch.where(outputs[:, -1] >= self.vocab.get_vocab_size(), outputs[:, -1], torch.LongTensor([self.vocab.get_unk_id()]))
             next_probs, decoder_hidden, coverage_memery = self.decode(decoder_hidden,
                                                                       decoder_input_ids,
                                                                       encoder_masks, encoder_outputs,
@@ -162,58 +162,6 @@ class Seq2SeqKPEModule(IEModule):
         prev_indices = prev_indices + torch.arange(batch_size).unsqueeze(-1) * self.beam_size
 
         return outputs[prev_indices].flatten(end_dim=-2)
-
-    def beam_search_decode_2(self, encoder_outputs, encoder_hidden, encoder_masks, encoder_vocab, oov_ids):
-        batch_size = encoder_outputs.size(0)
-        coverage_memery = self.coverage_memery.repeat(1, encoder_masks.size(1)) if self.is_coverage else None
-        batch_seqs = []
-        for i in range(batch_size):
-            nodes = []
-            last_nodes = []
-            decoder_hidden = (encoder_hidden[0][i: i + 1], encoder_hidden[1][i: i + 1])
-            p, decoder_hidden, coverage_memery = self.decode(decoder_hidden, self.start_ids,
-                                                             encoder_masks[i: i + 1], encoder_outputs[i:i + 1],
-                                                             encoder_vocab[i: i + 1], oov_ids[i: i + 1],
-                                                             coverage_memery)
-            topk, toki = p.topk(self.beam_size)
-
-            for b in range(self.beam_size):
-                node = BeamNode(None, topk[0][b], toki[0][b], 1, decoder_hidden, coverage_memery)
-                nodes.append(node)
-            for s in range(1, self.decoder_max_steps):
-                new_nodes = []
-                for node in nodes:
-                    if node.token_id == self.vocab.get_end_id() and node.prev is not None:
-                        last_nodes.append(node)
-                        continue
-
-                    token_id = node.token_id if node.token_id <= self.vocab.get_vocab_size() else self.vocab.get_unk_id()
-                    decoder_input_ids = torch.as_tensor([token_id], dtype=torch.long)
-                    coverage_memery = node.coverage
-                    decoder_hidden = node.hidden
-                    # p: [bs, vs]
-                    p, decoder_hidden, coverage_memery = self.decode(decoder_hidden, decoder_input_ids,
-                                                                     encoder_masks[i: i + 1], encoder_outputs[i:i + 1],
-                                                                     encoder_vocab[i: i + 1], oov_ids[i: i + 1],
-                                                                     coverage_memery)
-
-                    topk, toki = p.topk(self.beam_size)
-
-                    for b in range(self.beam_size):
-                        prop = topk[0][b]
-                        token_id = toki[0][b]
-                        new_node = BeamNode(node, prop + node.prop, token_id, node.length + 1, decoder_hidden, coverage_memery)
-                        new_nodes.append(new_node)
-                new_nodes.sort(key=lambda k: k.mean_prop(), reverse=False)
-                nodes = new_nodes[: self.beam_size]
-
-            node = sorted(last_nodes + nodes, key=lambda key: key.mean_prop(), reverse=True)[0]
-            token_ids = []
-            while node.prev is not None:
-                token_ids.append(node.token_id.item())
-                node = node.prev
-            batch_seqs.append(token_ids[::-1])
-        return batch_seqs
 
     def decode(self, decoder_hidden, decoder_input_ids, encoder_masks, encoder_outputs, encoder_vocab, oov_ids, coverage_memery):
         """
@@ -249,10 +197,8 @@ class Seq2SeqKPEModule(IEModule):
         ids, input_ids, input_masks, input_vocab_ids, oov_ids, oov_id_masks, oov2idx, targets, target_ids, target_masks = batch
         idx2oov = [{v: k for k, v in oov.items()} for oov in oov2idx]
         props = self(input_ids, input_masks, input_vocab_ids, oov_ids, target_ids)
-        loss = torch.gather(props, -1, target_ids.unsqueeze(-1)).squeeze(-1)  # todo
+        loss = torch.gather(props, -1, target_ids.unsqueeze(-1)).squeeze(-1)
         loss = -torch.log(loss + 1e-8) * target_masks
-        # loss = F.cross_entropy(props.view(-1, props.size(-1)), target_ids.view(-1), reduction='none')
-        # loss = loss.view(-1, target_ids.size(1)) * target_masks
         loss = loss.sum() / loss.size(0)
         pred_ids = props.argmax(-1).detach().cpu().numpy().tolist()
         seqs = self.get_batch_seqs(pred_ids, self.vocab.get_vocab(), idx2oov)
@@ -262,14 +208,14 @@ class Seq2SeqKPEModule(IEModule):
         ids, input_ids, input_masks, input_vocab_ids, oov_ids, oov_id_masks, oov2idx, targets, target_ids, target_masks = batch
         pred_ids = self(input_ids, input_masks, input_vocab_ids, oov_ids)
         idx2oov = [{v: k for k, v in oov.items()} for oov in oov2idx]
-        seqs = self.get_batch_seqs(pred_ids, self.vocab.get_vocab(), idx2oov)
+        seqs = self.get_batch_seqs(pred_ids.detach().cpu().numpy().tolist(), self.vocab.get_vocab(), idx2oov)
         return seqs, targets, input_masks, torch.FloatTensor(0)
 
     def get_predict_outputs(self, batch):
         ids, input_ids, input_masks, input_vocab_ids, oov_ids, oov_id_masks, oov2idx = batch
         pred_ids = self(input_ids, input_masks, input_vocab_ids, oov_ids)
         idx2oov = [{v: k for k, v in oov.items()} for oov in oov2idx]
-        seqs = self.get_batch_seqs(pred_ids, self.vocab.get_vocab(), idx2oov)
+        seqs = self.get_batch_seqs(pred_ids.detach().cpu().numpy().tolist(), self.vocab.get_vocab(), idx2oov)
         return ids, seqs
 
     def get_seqs(self, input_ids, idx2word, idx2oov):
@@ -297,16 +243,3 @@ class Seq2SeqKPEModule(IEModule):
             gold_num += len(target)
             correct_num += len((set(pred).intersection(set(target))))
         return correct_num, pred_num - correct_num, gold_num - correct_num
-
-
-class BeamNode:
-    def __init__(self, prev, prop, token_id, length, hidden, coverage):
-        self.prev = prev
-        self.prop = prop
-        self.token_id = token_id
-        self.length = length
-        self.hidden = hidden
-        self.coverage = coverage
-
-    def mean_prop(self):
-        return self.prop / (self.length + 1e-6)
