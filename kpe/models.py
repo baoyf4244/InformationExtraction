@@ -1,7 +1,6 @@
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from collections import defaultdict
 from module import IEModule
 from kpe.vocab import KPESeq2SeqVocab
 from layers import BahdanauAttention, Encoder
@@ -101,8 +100,8 @@ class Seq2SeqKPEModule(IEModule):
 
         for i in range(decoder_max_steps):
             p, decoder_hidden, coverage_memery = self.decode(decoder_hidden, decoder_input_ids,
-                                                             encoder_masks, encoder_outputs, encoder_vocab, oov_ids,
-                                                             coverage_memery)
+                                                             encoder_masks, encoder_outputs, encoder_vocab,
+                                                             oov_ids, coverage_memery)
             decoder_input_ids = target_ids[:, i] if teacher_forcing else p.argmax(-1)
             probs.append(p.unsqueeze(1))
 

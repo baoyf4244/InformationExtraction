@@ -2,7 +2,7 @@ data:
   class_path: kpe.KPEDataModule
   init_args:
     data_dir: data/kpe
-    max_len: 200
+    max_len: 500
     batch_size: 16
     vocab_file: data/kpe/vocab.txt
     min_freq: 10

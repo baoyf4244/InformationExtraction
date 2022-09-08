@@ -182,7 +182,7 @@ class BahdanauAttention(nn.Module):
 
         if self.is_coverage and coverage_inputs is not None:
             memery = self.memery(coverage_inputs.unsqueeze(-1))
-            score = self.attention(F.tanh(query + key + memery))  # [bs, ts, 1]
+            score = self.attention(torch.tanh(query_proj + key_proj + memery))  # [bs, ts, 1]
         else:
             score = self.attention(torch.tanh(query_proj + key_proj))  # [bs, ts, 1]
 
