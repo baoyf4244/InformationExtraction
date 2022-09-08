@@ -98,6 +98,7 @@ class KPEDataModule(IEDataModule):
 
 
 if __name__ == '__main__':
-    vocab_file = 'C:/Users/ML-YX01/code/InformationExtraction/data/kpe/vocab.txt'
-    data_file = 'C:/Users/ML-YX01/code/InformationExtraction/data/kpe/dev.txt'
+    vocab_file = '../data/kpe/vocab.txt'
+    data_file = '../data/kpe/train.txt'
+    vocab = KPESeq2SeqVocab(vocab_file=vocab_file, data_file=data_file, min_freq=10, do_lower=False)
 
