@@ -170,7 +170,10 @@ class PTRNREDataModule(IEDataModule):
 
 
 if __name__ == '__main__':
-    vocab_file = 'C:/Users/ML-YX01/code/InformationExtraction/data/nre/vocab.txt'
-    data_file = 'C:/Users/ML-YX01/code/InformationExtraction/data/nre/train.txt'
-    relations = 'C:/Users/ML-YX01/code/InformationExtraction/data/nre/relations.txt'
-
+    vocab_file = '../data/nre/vocab.txt'
+    data_file = '../data/nre/train.txt'
+    relation_file = '../data/nre/relations.txt'
+    # label_vocab = LabelVocab(relation_file)
+    # vocab = WDVocab(label_vocab, vocab_file=vocab_file, data_file=data_file,
+    #                 min_freq=10, do_lower=False)
+    vocab = Vocab(vocab_file=vocab_file, data_file=data_file, do_lower=False, min_freq=10)

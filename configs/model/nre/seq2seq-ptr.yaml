@@ -8,3 +8,4 @@ model:
     hidden_size: 256
     num_layers: 1
     max_decoder_step: 50
+    predict_results_file: data/nre/results.txt

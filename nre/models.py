@@ -65,8 +65,16 @@ class Seq2SeqNREModule(IEModule):
 
 
 class Seq2SeqWDNREModule(Seq2SeqNREModule):
-    def __init__(self, vocab_file, label_file, do_lower, embedding_size, hidden_size, num_layers, decoder_max_steps):
-        super(Seq2SeqWDNREModule, self).__init__()
+    def __init__(
+            self,
+            vocab_file,
+            label_file,
+            do_lower, embedding_size,
+            hidden_size, num_layers,
+            decoder_max_steps,
+            *args, **kwargs
+    ):
+        super(Seq2SeqWDNREModule, self).__init__(*args, **kwargs)
         self.label_vocab = LabelVocab(label_file)
         self.vocab = WDVocab(self.label_vocab, vocab_file=vocab_file, do_lower=do_lower)
 
@@ -225,11 +233,10 @@ class Seq2SeqPTRNREModule(Seq2SeqNREModule):
 
         return head_start_logits, head_end_logits, tail_start_logits, tail_end_logits, relation_logits
 
-    @staticmethod
-    def get_result(head_start_offsets, head_end_offsets, tail_start_offsets, tail_end_offsets, relation_ids):
+    def get_result(self, head_start_offsets, head_end_offsets, tail_start_offsets, tail_end_offsets, relation_ids):
         triples = set()
         for i in range(len(head_start_offsets)):
-            if relation_ids[i] == 0:
+            if relation_ids[i] == self.label_vocab.get_end_id():
                 break
             triple = (head_start_offsets[i], head_end_offsets[i], tail_start_offsets[i],
                       tail_end_offsets[i], relation_ids[i])
@@ -320,10 +327,10 @@ class PTRDecoder(nn.Module):
         self.relation_cls = nn.Linear(8 * hidden_size + input_size, num_labels)
 
     def forward(self, encoder_outputs, encoder_masks, decoder_input, decoder_hidden):
-        encoder_masks = torch.logical_not(encoder_masks)
+        if torch.sum(encoder_masks[:, 0]).item() > 0:
+            encoder_masks = torch.logical_not(encoder_masks)
         att_output, att_scores = self.attention(decoder_input, encoder_outputs, encoder_masks)
         decoder_output, hidden = self.lstm(torch.cat([decoder_input, att_output], -1), decoder_hidden)
-        encoder_masks = torch.logical_not(encoder_masks)
         head_inputs = torch.cat([encoder_outputs, decoder_output.unsqueeze(1).repeat(1, encoder_outputs.size(1), 1)], -1)
         head_outputs, _ = self.head_lstm(head_inputs)  # [bs, ts, 2 * hs]
         head_start_logits = self.head_start_cls(head_outputs).squeeze()  # [bs, ts]

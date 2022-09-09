@@ -35,7 +35,7 @@ class WDVocab(Vocab):
         return self.word2idx[SpecialTokens.SEMICOLON.value]
 
     def get_special_tokens(self):
-        return super(WDVocab, self).get_special_tokens() + [SpecialTokens.EOS.value, SpecialTokens.SOS.value, SpecialTokens.VERTICAL.value, SpecialTokens.SEMICOLON.value] + self.label_vocab.get_vocab()
+        return super(WDVocab, self).get_special_tokens() + [SpecialTokens.SOS.value, SpecialTokens.EOS.value, SpecialTokens.VERTICAL.value, SpecialTokens.SEMICOLON.value] + self.label_vocab.get_vocab()
 
 
 class PTRLabelVocab(LabelVocab):
