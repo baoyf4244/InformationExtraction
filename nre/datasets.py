@@ -9,19 +9,6 @@ class WDNREDataSet(IEDataSet):
         self.vocab = vocab
         self.label_vocab = self.vocab.label_vocab
 
-    def get_vocab_masks(self, token_ids):
-        vocab_masks = [1] * self.vocab.get_vocab_size()
-        for token_id in token_ids:
-            vocab_masks[token_id] = 0
-
-        vocab_masks[self.vocab.get_end_id()] = 0
-        vocab_masks[self.vocab.get_vertical_token_id()] = 0
-        vocab_masks[self.vocab.get_semicolon_token_id()] = 0
-        for relation in self.label_vocab.get_vocab():
-            vocab_masks[self.vocab.convert_token_to_id(relation)] = 0
-
-        return vocab_masks
-
     def get_targets(self, labels, tokens):
         targets = []
         for label in labels:
@@ -41,8 +28,7 @@ class WDNREDataSet(IEDataSet):
         data = {
             'tokens': tokens,
             'token_ids': token_ids,
-            'masks': [1] * len(token_ids),
-            'vocab_masks': self.get_vocab_masks(token_ids)
+            'masks': [1] * len(token_ids)
         }
 
         if not self.is_predict:
@@ -73,9 +59,22 @@ class WDNREDataModule(IEDataModule):
         dataset.make_dataset()
         return dataset
 
+    def get_vocab_masks(self, token_ids):
+        vocab_masks = [1] * self.vocab.get_vocab_size()
+        for token_id in token_ids:
+            vocab_masks[token_id] = 0
+
+        vocab_masks[self.vocab.get_end_id()] = 0
+        vocab_masks[self.vocab.get_vertical_token_id()] = 0
+        vocab_masks[self.vocab.get_semicolon_token_id()] = 0
+        for relation in self.label_vocab.get_vocab():
+            vocab_masks[self.vocab.convert_token_to_id(relation)] = 0
+
+        return vocab_masks
+
     def collocate_fn(self, batch, is_predict=False):
         tokens = self.get_data_by_name(batch, 'tokens')
-        vocab_masks = torch.LongTensor(self.get_data_by_name(batch, 'vocab_masks'))
+        vocab_masks = torch.LongTensor([self.get_vocab_masks(token_ids) for token_ids in self.get_data_by_name(batch, 'token_ids')])
         input_ids = self.pad_batch(self.get_data_by_name(batch, 'token_ids'), self.vocab.get_pad_id())
         input_masks = self.pad_batch(self.get_data_by_name(batch, 'masks'), 0)
 

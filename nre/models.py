@@ -60,6 +60,9 @@ class Seq2SeqNREModule(IEModule):
     def get_f1_stats(self, preds, targets, masks=None):
         raise NotImplementedError
 
+    def get_predict_outputs(self, batch):
+        raise NotImplementedError
+
 
 class Seq2SeqWDNREModule(Seq2SeqNREModule):
     def __init__(self, vocab_file, label_file, do_lower, embedding_size, hidden_size, num_layers, decoder_max_steps):
@@ -152,6 +155,9 @@ class Seq2SeqWDNREModule(Seq2SeqNREModule):
         loss = loss.sum() / target_ids.size(0)
         return preds, targets, target_masks, loss
 
+    def get_predict_outputs(self, batch):
+        raise NotImplementedError
+
 
 class Seq2SeqPTRNREModule(Seq2SeqNREModule):
     def __init__(
@@ -162,9 +168,10 @@ class Seq2SeqPTRNREModule(Seq2SeqNREModule):
             embedding_size,
             hidden_size,
             num_layers,
-            max_decoder_step
+            max_decoder_step,
+            *args, **kwargs
     ):
-        super(Seq2SeqPTRNREModule, self).__init__()
+        super(Seq2SeqPTRNREModule, self).__init__(*args, **kwargs)
         self.vocab = Vocab(vocab_file=vocab_file, do_lower=do_lower)
         self.label_vocab = PTRLabelVocab(label_file)
 
@@ -284,6 +291,9 @@ class Seq2SeqPTRNREModule(Seq2SeqNREModule):
         target_triples = self.get_batch_results(head_start_ids, head_end_ids, tail_start_ids, tail_end_ids, target_ids)
         return pred_triples, target_triples, target_masks, loss
 
+    def get_predict_outputs(self, batch):
+        raise NotImplementedError
+
 
 class PTRDecoder(nn.Module):
     def __init__(self, input_size, hidden_size, num_layers, num_labels):
@@ -310,6 +320,7 @@ class PTRDecoder(nn.Module):
         self.relation_cls = nn.Linear(8 * hidden_size + input_size, num_labels)
 
     def forward(self, encoder_outputs, encoder_masks, decoder_input, decoder_hidden):
+        encoder_masks = torch.logical_not(encoder_masks)
         att_output, att_scores = self.attention(decoder_input, encoder_outputs, encoder_masks)
         decoder_output, hidden = self.lstm(torch.cat([decoder_input, att_output], -1), decoder_hidden)
         encoder_masks = torch.logical_not(encoder_masks)
@@ -337,3 +348,6 @@ class PTRDecoder(nn.Module):
         relation_logits = self.relation_cls(relation_inputs)
 
         return head_start_logits, head_end_logits, tail_start_logits, tail_end_logits, relation_logits, (decoder_output, hidden), entity_outputs
+
+    def get_predict_outputs(self, batch):
+        raise NotImplementedError
